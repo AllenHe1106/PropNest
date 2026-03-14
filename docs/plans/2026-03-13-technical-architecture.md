@@ -97,6 +97,83 @@ propnest/
 
 **Key rule:** `packages/db` exports a factory function, not a singleton. Mobile and web initialize the client differently (different cookie/storage adapters). The factory pattern handles this cleanly.
 
+**Key rule:** Three new packages support testing: `packages/mocks` (MSW handlers + fixtures + scenarios), `packages/test-utils` (RLS integration suite helpers only), `packages/repositories` (typed interfaces + dual implementations for hook unit tests). These are test-only packages and must never be imported by production application code.
+
+---
+
+## 1.1. Testing Infrastructure [LOCKED]
+
+**Decision: Three-layer hybrid. MSW for E2E and component tests, local Supabase for RLS, repository interfaces for hook unit tests.**
+
+This is not a preference — it is derived from two hard constraints: (1) RLS correctness is a legal requirement that cannot be satisfied by JavaScript simulation, and (2) E2E test speed directly determines whether developers run tests at all.
+
+### The Three Layers
+
+**Layer 1 — Unit tests** (`packages/core`, hooks, components via `packages/repositories/mock/`)
+- Tool: Vitest
+- Mock strategy: None for `packages/core`. Repository interface mocks for hooks and components.
+- Trigger: Every commit, watch mode in development.
+- Speed target: <5s for `packages/core`, <60s for components.
+
+**Layer 2 — RLS Integration Suite** (`supabase/tests/rls/`)
+- Tool: Vitest against a live `supabase start` instance
+- Mock strategy: None. Real Postgres, real GoTrue JWTs, real PostgREST, real RLS evaluation.
+- Trigger: Every PR that touches `supabase/migrations/**`, plus nightly cron.
+- Speed target: <10 minutes including Docker startup.
+- Non-negotiable: A broken RLS policy must fail this suite before it reaches `main`. This suite is the sole authoritative source for access-control correctness.
+
+**Layer 3 — E2E Tests** (`apps/web/e2e/`, `apps/mobile/e2e/`)
+- Tool: Playwright (web), Detox/Maestro (mobile)
+- Mock strategy: MSW v2 (`packages/mocks`) — network interception with in-memory store and simulated RLS filtering.
+- Trigger: Every PR, required blocking check.
+- Speed target: <10 minutes for web suite, no Docker dependency.
+- What it does NOT test: Actual RLS policies. That belongs to Layer 2.
+
+### New Packages
+
+**`packages/mocks`** — MSW v2 handlers, in-memory `MockStore`, faker-based fixture factories with deterministic seed support, Scenario DSL, and a WebSocket mock server for Realtime. Exported as `./server` (Vitest/Node), `./browser` (Playwright), `./scenarios`. Every new Supabase table, Edge Function, or Stripe API call requires a corresponding handler update before the PR merges.
+
+```
+packages/mocks/
+├── package.json                        # deps: msw@^2, @faker-js/faker, ws
+└── src/
+    ├── store/index.ts                  # MockStore: Maps for users, sessions, properties, payments
+    ├── fixtures/                       # buildTenant(), buildLandlord(), buildPaymentIntent(), etc.
+    ├── scenarios/                      # Named DSL: landlordWithTwoTenants(), overduePayment(), etc.
+    ├── handlers/
+    │   ├── supabase/                   # auth.ts, rest.ts (PostgREST), storage.ts
+    │   ├── stripe/                     # payment-intents.ts, accounts.ts, webhook-utils.ts
+    │   └── edge-functions/             # create-payment-intent.ts, stripe-webhook.ts
+    ├── realtime/ws-server.ts           # MockRealtimeServer — Phoenix protocol subset via ws package
+    ├── server.ts                       # setupServer(...allHandlers) — Node/Vitest
+    └── browser.ts                      # setupWorker(...allHandlers) — Playwright
+```
+
+**`packages/test-utils`** — Helpers for the RLS Integration Suite exclusively. Requires a running local Supabase stack. Throws at import time if `SUPABASE_SERVICE_KEY` is absent. Never imported by application code or the fast test suite.
+
+```
+packages/test-utils/
+└── src/
+    ├── auth-helpers.ts                 # createAuthUser(), signInAsUser(), getServiceRoleClient()
+    ├── rls-helpers.ts                  # assertRLSVisible(), assertRLSNotVisible()
+    ├── seed-helpers.ts                 # createLandlord(), createTenant(), createProperty(), createLease()
+    ├── reset.ts                        # truncateAll() — FK-safe truncation via service role
+    ├── stripe-helpers.ts               # triggerStripeWebhook() with real HMAC signature
+    └── env.ts                          # throws at import if SUPABASE_SERVICE_KEY absent
+```
+
+**`packages/repositories`** — TypeScript interfaces (`IPaymentRepository`, `IMaintenanceRepository`, `IPropertyRepository`, `IRealtimeChannel`) with real Supabase implementations and in-memory mock implementations backed by `MockStore`. Used by hook and component unit tests only. Not used by E2E tests.
+
+### CI Pipeline
+
+Two test gates:
+- **Fast suite** (every PR, blocking): `pnpm test:unit && pnpm test:components && pnpm test:e2e`. No Docker. Target: <15 minutes total.
+- **RLS suite** (path-triggered `supabase/migrations/**` + nightly, required before migration merges): `supabase start && pnpm test:rls && supabase stop`. Target: <10 minutes including startup.
+
+### RLS Policy Process
+
+All new RLS policies require a corresponding test in `supabase/tests/rls/` before the migration PR merges. The TypeScript RLS simulation in `packages/mocks/src/handlers/supabase/rest.ts` must mirror policy changes, but is explicitly not authoritative. Every handler block that simulates access control must include the comment `// RLS simulation — not a security test`. The SQL migration is the source of truth; the nightly RLS suite is the enforcer.
+
 ---
 
 ## 2. Postgres Schema [LOCKED]
