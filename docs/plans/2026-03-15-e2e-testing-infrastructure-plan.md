@@ -1,0 +1,2896 @@
+# E2E Testing Infrastructure — Implementation Plan
+
+> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+
+**Goal:** Build a three-layer test infrastructure (MSW fast path, RLS integration suite, repository interfaces) that enables realistic E2E mocking during development and automated CI testing.
+
+**Architecture:** MSW v2 intercepts network calls for fast E2E/component tests (no Docker). A separate RLS integration suite runs real Postgres via `supabase start` for security-critical policy validation. Repository interfaces enable isolated hook/component unit tests. All three layers share a common Scenario DSL for test data.
+
+**Tech Stack:** MSW v2, Vitest, Playwright, @faker-js/faker, ws (WebSocket), Stripe test helpers, Supabase CLI (local stack), pnpm workspaces, Turborepo
+
+**Prerequisites:** This plan assumes the repo has NO code yet (confirmed — docs only). Tasks 1–3 bootstrap the monorepo itself. Tasks 4+ build the testing packages.
+
+---
+
+## Task 1: Bootstrap Monorepo
+
+**Files:**
+- Create: `package.json`
+- Create: `pnpm-workspace.yaml`
+- Create: `turbo.json`
+- Create: `.npmrc`
+- Create: `.gitignore`
+- Create: `.env.example`
+- Create: `tsconfig.base.json`
+
+**Step 1: Initialize pnpm workspace root**
+
+```bash
+cd /Users/allenhe/Documents/propnest
+pnpm init
+```
+
+**Step 2: Create pnpm-workspace.yaml**
+
+```yaml
+packages:
+  - "apps/*"
+  - "packages/*"
+```
+
+**Step 3: Create turbo.json**
+
+```json
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "test:unit": {
+      "dependsOn": ["^build"]
+    },
+    "test:components": {
+      "dependsOn": ["^build"]
+    },
+    "test:e2e": {
+      "dependsOn": ["build"]
+    },
+    "test:rls": {},
+    "lint": {
+      "dependsOn": ["^build"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    }
+  }
+}
+```
+
+**Step 4: Create .npmrc**
+
+```ini
+auto-install-peers=true
+strict-peer-dependencies=false
+```
+
+**Step 5: Create .gitignore**
+
+```gitignore
+node_modules/
+dist/
+.turbo/
+.env
+.env.local
+.env.*.local
+*.tsbuildinfo
+.next/
+.expo/
+coverage/
+test-results/
+playwright-report/
+```
+
+**Step 6: Create .env.example**
+
+```bash
+# Supabase
+SUPABASE_URL=http://localhost:54321
+SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+SUPABASE_JWT_SECRET=super-secret-jwt-token-with-at-least-32-characters-long
+
+# Stripe
+STRIPE_SECRET_KEY=sk_test_xxx
+STRIPE_WEBHOOK_SECRET=whsec_xxx
+STRIPE_PUBLISHABLE_KEY=pk_test_xxx
+
+# MSW (test only)
+NEXT_PUBLIC_MSW_ENABLED=false
+MSW_REALTIME_PORT=4001
+```
+
+**Step 7: Create tsconfig.base.json**
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  }
+}
+```
+
+**Step 8: Install root devDependencies**
+
+```bash
+pnpm add -Dw turbo typescript vitest
+```
+
+**Step 9: Update root package.json scripts**
+
+Add to `package.json`:
+```json
+{
+  "private": true,
+  "scripts": {
+    "build": "turbo build",
+    "dev": "turbo dev",
+    "test:unit": "turbo test:unit",
+    "test:components": "turbo test:components",
+    "test:e2e": "turbo test:e2e",
+    "test:rls": "turbo test:rls",
+    "lint": "turbo lint",
+    "typecheck": "turbo typecheck"
+  },
+  "packageManager": "pnpm@9.15.0"
+}
+```
+
+**Step 10: Create directory stubs**
+
+```bash
+mkdir -p apps/web apps/mobile packages/db/src packages/core/src packages/validators/src packages/ui/src packages/config supabase/migrations supabase/functions
+```
+
+**Step 11: Commit**
+
+```bash
+git add -A
+git commit -m "chore: bootstrap Turborepo monorepo with pnpm workspaces"
+```
+
+---
+
+## Task 2: Create packages/db (Supabase Client + Types)
+
+**Files:**
+- Create: `packages/db/package.json`
+- Create: `packages/db/tsconfig.json`
+- Create: `packages/db/src/client.ts`
+- Create: `packages/db/src/types.ts`
+- Create: `packages/db/src/index.ts`
+
+**Step 1: Create package.json**
+
+```json
+{
+  "name": "@propnest/db",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.0"
+  }
+}
+```
+
+**Step 2: Create tsconfig.json**
+
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}
+```
+
+**Step 3: Create src/types.ts**
+
+This will eventually be auto-generated by `supabase gen types`. For now, define the shape manually based on the locked schema:
+
+```typescript
+// Generated (or will be generated) from `supabase gen types typescript --local`
+// This is the manual stub — replace with generated output once supabase is initialized.
+
+export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
+
+export type OrgMemberRole = 'owner' | 'manager';
+export type LeaseStatus = 'draft' | 'active' | 'expired' | 'terminated';
+export type PaymentMethodType = 'stripe' | 'cash' | 'check' | 'bank_transfer' | 'other';
+export type PaymentStatus = 'pending' | 'processing' | 'succeeded' | 'failed' | 'refunded';
+export type ChargeType = 'rent' | 'late_fee' | 'deposit' | 'utility' | 'other';
+export type MaintenanceStatus = 'open' | 'in_progress' | 'pending_approval' | 'completed' | 'cancelled';
+export type MaintenancePriority = 'low' | 'medium' | 'high' | 'emergency';
+export type DocumentEntityType = 'lease' | 'property' | 'unit' | 'maintenance_request';
+
+export interface Organization {
+  id: string;
+  name: string;
+  slug: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Profile {
+  id: string;
+  full_name: string | null;
+  phone: string | null;
+  avatar_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrganizationMember {
+  id: string;
+  organization_id: string;
+  user_id: string;
+  role: OrgMemberRole;
+  invited_at: string;
+  accepted_at: string | null;
+}
+
+export interface Property {
+  id: string;
+  organization_id: string;
+  name: string;
+  address_line1: string;
+  address_line2: string | null;
+  city: string;
+  state: string;
+  zip: string;
+  country: string;
+  property_type: string | null;
+  year_built: number | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Unit {
+  id: string;
+  property_id: string;
+  unit_number: string | null;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  square_feet: number | null;
+  rent_amount: number | null;
+  is_available: boolean;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Lease {
+  id: string;
+  unit_id: string;
+  status: LeaseStatus;
+  start_date: string;
+  end_date: string | null;
+  rent_amount: number;
+  security_deposit: number | null;
+  rent_due_day: number;
+  grace_period_days: number;
+  late_fee_type: string;
+  late_fee_amount: number | null;
+  signed_at: string | null;
+  document_url: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LeaseTenant {
+  id: string;
+  lease_id: string;
+  user_id: string;
+  is_primary: boolean;
+  invited_at: string;
+  accepted_at: string | null;
+}
+
+export interface RentCharge {
+  id: string;
+  lease_id: string;
+  charge_type: ChargeType;
+  amount: number;
+  due_date: string;
+  description: string | null;
+  is_waived: boolean;
+  waived_by: string | null;
+  waived_at: string | null;
+  created_at: string;
+}
+
+export interface Payment {
+  id: string;
+  lease_id: string;
+  rent_charge_id: string | null;
+  paid_by: string;
+  recorded_by: string | null;
+  method: PaymentMethodType;
+  status: PaymentStatus;
+  amount: number;
+  payment_date: string;
+  stripe_payment_intent_id: string | null;
+  stripe_charge_id: string | null;
+  receipt_url: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StripeAccount {
+  id: string;
+  organization_id: string;
+  stripe_account_id: string;
+  charges_enabled: boolean;
+  payouts_enabled: boolean;
+  details_submitted: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MaintenanceRequest {
+  id: string;
+  unit_id: string;
+  submitted_by: string;
+  assigned_to: string | null;
+  title: string;
+  description: string;
+  status: MaintenanceStatus;
+  priority: MaintenancePriority;
+  category: string | null;
+  scheduled_date: string | null;
+  completed_at: string | null;
+  estimated_cost: number | null;
+  actual_cost: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MaintenanceComment {
+  id: string;
+  request_id: string;
+  author_id: string;
+  body: string;
+  is_internal: boolean;
+  created_at: string;
+}
+
+export interface MaintenanceAttachment {
+  id: string;
+  request_id: string;
+  uploaded_by: string;
+  storage_path: string;
+  mime_type: string;
+  file_size_bytes: number | null;
+  created_at: string;
+}
+
+export interface Document {
+  id: string;
+  organization_id: string;
+  entity_type: DocumentEntityType;
+  entity_id: string;
+  name: string;
+  storage_path: string;
+  mime_type: string | null;
+  file_size_bytes: number | null;
+  uploaded_by: string;
+  created_at: string;
+}
+
+export interface Conversation {
+  id: string;
+  organization_id: string;
+  subject: string | null;
+  created_at: string;
+}
+
+export interface ConversationParticipant {
+  conversation_id: string;
+  user_id: string;
+  last_read_at: string | null;
+}
+
+export interface Message {
+  id: string;
+  conversation_id: string;
+  sender_id: string;
+  body: string;
+  sent_at: string;
+}
+
+export interface AuditLog {
+  id: string;
+  table_name: string;
+  record_id: string;
+  action: string;
+  old_data: Json | null;
+  new_data: Json | null;
+  performed_by: string;
+  performed_at: string;
+}
+```
+
+**Step 4: Create src/client.ts**
+
+```typescript
+import { createClient as supabaseCreateClient, type SupabaseClient } from '@supabase/supabase-js';
+
+export type { SupabaseClient };
+
+/**
+ * Factory function — NOT a singleton.
+ * Web and mobile pass different storage adapters.
+ */
+export function createClient(
+  url: string,
+  anonKey: string,
+  options?: {
+    auth?: {
+      storage?: any;
+      autoRefreshToken?: boolean;
+      persistSession?: boolean;
+      detectSessionInUrl?: boolean;
+    };
+  },
+): SupabaseClient {
+  return supabaseCreateClient(url, anonKey, {
+    auth: {
+      autoRefreshToken: true,
+      persistSession: true,
+      detectSessionInUrl: true,
+      ...options?.auth,
+    },
+  });
+}
+```
+
+**Step 5: Create src/index.ts**
+
+```typescript
+export { createClient } from './client';
+export type { SupabaseClient } from './client';
+export * from './types';
+```
+
+**Step 6: Install dependencies and commit**
+
+```bash
+cd /Users/allenhe/Documents/propnest
+pnpm install
+git add -A
+git commit -m "feat: add packages/db with Supabase client factory and type stubs"
+```
+
+---
+
+## Task 3: Create packages/core (Business Logic Stubs)
+
+**Files:**
+- Create: `packages/core/package.json`
+- Create: `packages/core/tsconfig.json`
+- Create: `packages/core/src/index.ts`
+- Create: `packages/core/src/permissions/role-checks.ts`
+- Create: `packages/core/src/payments/payment-status.ts`
+- Create: `packages/core/src/payments/calculate-late-fee.ts`
+- Create: `packages/core/src/leases/lease-status.ts`
+- Create: `packages/core/src/maintenance/request-status.ts`
+
+**Step 1: Create package.json**
+
+```json
+{
+  "name": "@propnest/core",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./permissions": "./src/permissions/role-checks.ts",
+    "./payments": "./src/payments/index.ts",
+    "./leases": "./src/leases/index.ts",
+    "./maintenance": "./src/maintenance/index.ts"
+  },
+  "scripts": {
+    "test:unit": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "vitest": "catalog:"
+  }
+}
+```
+
+Note: `catalog:` requires adding a `pnpm-workspace.yaml` catalog or just using `"workspace:*"` — use the version installed at root. Simpler approach: just reference the root version.
+
+Actually, simpler:
+
+```json
+{
+  "name": "@propnest/core",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./permissions": "./src/permissions/role-checks.ts"
+  },
+  "scripts": {
+    "test:unit": "vitest run",
+    "typecheck": "tsc --noEmit"
+  }
+}
+```
+
+**Step 2: Create tsconfig.json**
+
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}
+```
+
+**Step 3: Write the failing test for role-checks**
+
+Create `packages/core/src/permissions/__tests__/role-checks.test.ts`:
+
+```typescript
+import { describe, it, expect } from 'vitest';
+import {
+  canManageFinancials,
+  canSubmitMaintenance,
+  canViewAllProperties,
+  canInviteUsers,
+  canDeleteProperty,
+  type AppRole,
+} from '../role-checks';
+
+describe('role-checks', () => {
+  it('only owners can manage financials', () => {
+    expect(canManageFinancials('owner')).toBe(true);
+    expect(canManageFinancials('manager')).toBe(false);
+    expect(canManageFinancials('tenant')).toBe(false);
+  });
+
+  it('all roles can submit maintenance', () => {
+    expect(canSubmitMaintenance('owner')).toBe(true);
+    expect(canSubmitMaintenance('manager')).toBe(true);
+    expect(canSubmitMaintenance('tenant')).toBe(true);
+  });
+
+  it('only owners and managers can view all properties', () => {
+    expect(canViewAllProperties('owner')).toBe(true);
+    expect(canViewAllProperties('manager')).toBe(true);
+    expect(canViewAllProperties('tenant')).toBe(false);
+  });
+
+  it('only owners and managers can invite users', () => {
+    expect(canInviteUsers('owner')).toBe(true);
+    expect(canInviteUsers('manager')).toBe(true);
+    expect(canInviteUsers('tenant')).toBe(false);
+  });
+
+  it('only owners can delete properties', () => {
+    expect(canDeleteProperty('owner')).toBe(true);
+    expect(canDeleteProperty('manager')).toBe(false);
+    expect(canDeleteProperty('tenant')).toBe(false);
+  });
+});
+```
+
+**Step 4: Run test to verify it fails**
+
+```bash
+cd packages/core && npx vitest run src/permissions/__tests__/role-checks.test.ts
+```
+
+Expected: FAIL — module not found
+
+**Step 5: Write role-checks.ts**
+
+```typescript
+export type AppRole = 'owner' | 'manager' | 'tenant';
+
+export function canManageFinancials(role: AppRole): boolean {
+  return role === 'owner';
+}
+
+export function canSubmitMaintenance(role: AppRole): boolean {
+  return role === 'owner' || role === 'manager' || role === 'tenant';
+}
+
+export function canViewAllProperties(role: AppRole): boolean {
+  return role === 'owner' || role === 'manager';
+}
+
+export function canInviteUsers(role: AppRole): boolean {
+  return role === 'owner' || role === 'manager';
+}
+
+export function canDeleteProperty(role: AppRole): boolean {
+  return role === 'owner';
+}
+```
+
+**Step 6: Write payment-status.ts and calculate-late-fee.ts stubs**
+
+`packages/core/src/payments/payment-status.ts`:
+```typescript
+import type { PaymentStatus } from '@propnest/db';
+
+export function isTerminalStatus(status: PaymentStatus): boolean {
+  return status === 'succeeded' || status === 'failed' || status === 'refunded';
+}
+
+export function canRetry(status: PaymentStatus): boolean {
+  return status === 'failed';
+}
+```
+
+`packages/core/src/payments/calculate-late-fee.ts`:
+```typescript
+export interface LateFeeConfig {
+  type: 'flat' | 'percentage';
+  amount: number; // flat dollar amount, or percentage (e.g. 5 for 5%)
+  rentAmount: number;
+}
+
+export function calculateLateFee(config: LateFeeConfig): number {
+  if (config.type === 'flat') return config.amount;
+  return Math.round(config.rentAmount * (config.amount / 100) * 100) / 100;
+}
+```
+
+`packages/core/src/leases/lease-status.ts`:
+```typescript
+import type { LeaseStatus } from '@propnest/db';
+
+export function isActiveLease(status: LeaseStatus): boolean {
+  return status === 'active';
+}
+
+export function canTerminate(status: LeaseStatus): boolean {
+  return status === 'active';
+}
+```
+
+`packages/core/src/maintenance/request-status.ts`:
+```typescript
+import type { MaintenanceStatus } from '@propnest/db';
+
+export function canTransition(from: MaintenanceStatus, to: MaintenanceStatus): boolean {
+  const allowed: Record<MaintenanceStatus, MaintenanceStatus[]> = {
+    open: ['in_progress', 'cancelled'],
+    in_progress: ['pending_approval', 'completed', 'cancelled'],
+    pending_approval: ['completed', 'in_progress'],
+    completed: [],
+    cancelled: ['open'],
+  };
+  return allowed[from].includes(to);
+}
+```
+
+Create index files for each:
+- `packages/core/src/payments/index.ts` → re-exports both payment files
+- `packages/core/src/leases/index.ts` → re-exports lease-status
+- `packages/core/src/maintenance/index.ts` → re-exports request-status
+- `packages/core/src/index.ts` → re-exports all
+
+**Step 7: Run test to verify it passes**
+
+```bash
+cd /Users/allenhe/Documents/propnest && npx vitest run --project packages/core
+```
+
+Expected: PASS
+
+**Step 8: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add packages/core with role checks, payment/lease/maintenance logic"
+```
+
+---
+
+## Task 4: Create packages/mocks — MockStore + Fixtures
+
+This is the foundation of the MSW mock layer. All handlers will read from and write to this store.
+
+**Files:**
+- Create: `packages/mocks/package.json`
+- Create: `packages/mocks/tsconfig.json`
+- Create: `packages/mocks/src/store/index.ts`
+- Create: `packages/mocks/src/fixtures/user.factory.ts`
+- Create: `packages/mocks/src/fixtures/property.factory.ts`
+- Create: `packages/mocks/src/fixtures/payment.factory.ts`
+- Create: `packages/mocks/src/fixtures/maintenance.factory.ts`
+- Create: `packages/mocks/src/fixtures/index.ts`
+- Test: `packages/mocks/src/store/__tests__/store.test.ts`
+- Test: `packages/mocks/src/fixtures/__tests__/factories.test.ts`
+
+**Step 1: Create package.json**
+
+```json
+{
+  "name": "@propnest/mocks",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server.ts",
+    "./browser": "./src/browser.ts",
+    "./scenarios": "./src/scenarios/index.ts"
+  },
+  "scripts": {
+    "test:unit": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@faker-js/faker": "^9.0.0",
+    "msw": "^2.7.0",
+    "ws": "^8.18.0",
+    "@propnest/db": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.0",
+    "vitest": "^3.0.0"
+  }
+}
+```
+
+**Step 2: Write failing test for MockStore**
+
+`packages/mocks/src/store/__tests__/store.test.ts`:
+
+```typescript
+import { describe, it, expect, beforeEach } from 'vitest';
+import { createMockStore, type MockStore } from '../index';
+
+describe('MockStore', () => {
+  let store: MockStore;
+
+  beforeEach(() => {
+    store = createMockStore();
+  });
+
+  it('starts empty', () => {
+    expect(store.users.size).toBe(0);
+    expect(store.sessions.size).toBe(0);
+    expect(store.organizations.size).toBe(0);
+    expect(store.properties.size).toBe(0);
+    expect(store.units.size).toBe(0);
+    expect(store.leases.size).toBe(0);
+    expect(store.payments.size).toBe(0);
+    expect(store.maintenanceRequests.size).toBe(0);
+    expect(store.uploads.size).toBe(0);
+    expect(store.messages.size).toBe(0);
+  });
+
+  it('reset() clears all data', () => {
+    store.users.set('u1', { id: 'u1' } as any);
+    store.organizations.set('o1', { id: 'o1' } as any);
+    store.reset();
+    expect(store.users.size).toBe(0);
+    expect(store.organizations.size).toBe(0);
+  });
+
+  it('seed() populates from a scenario', () => {
+    store.seed({
+      users: [{ id: 'u1', email: 'a@b.com', password: 'pass', role: 'owner' }],
+      organizations: [{ id: 'o1', name: 'Test Org', slug: 'test-org', created_at: '', updated_at: '' }],
+    });
+    expect(store.users.size).toBe(1);
+    expect(store.organizations.size).toBe(1);
+  });
+});
+```
+
+**Step 3: Run test to verify it fails**
+
+```bash
+cd /Users/allenhe/Documents/propnest && npx vitest run packages/mocks/src/store/__tests__/store.test.ts
+```
+
+Expected: FAIL — module not found
+
+**Step 4: Implement MockStore**
+
+`packages/mocks/src/store/index.ts`:
+
+```typescript
+import type {
+  Organization,
+  Profile,
+  OrganizationMember,
+  Property,
+  Unit,
+  Lease,
+  LeaseTenant,
+  RentCharge,
+  Payment,
+  StripeAccount,
+  MaintenanceRequest,
+  MaintenanceComment,
+  MaintenanceAttachment,
+  Document,
+  Conversation,
+  ConversationParticipant,
+  Message,
+} from '@propnest/db';
+
+/** Represents an auth user in the mock — extends Supabase auth.users shape */
+export interface MockUser {
+  id: string;
+  email: string;
+  password: string;
+  role: 'owner' | 'manager' | 'tenant';
+  user_metadata?: Record<string, unknown>;
+}
+
+/** Represents an active session */
+export interface MockSession {
+  access_token: string;
+  refresh_token: string;
+  user_id: string;
+  expires_at: number;
+}
+
+/** Represents a stored upload */
+export interface MockUpload {
+  bucket: string;
+  path: string;
+  mime_type: string;
+  data: Uint8Array | null;
+  created_at: string;
+}
+
+/** Stripe payment intent mock */
+export interface MockPaymentIntent {
+  id: string;
+  amount: number;
+  currency: string;
+  status: 'requires_payment_method' | 'requires_confirmation' | 'requires_action' | 'processing' | 'succeeded' | 'canceled';
+  client_secret: string;
+  transfer_data?: { destination: string };
+  metadata?: Record<string, string>;
+}
+
+/** Stripe Connect account mock */
+export interface MockStripeConnectAccount {
+  id: string;
+  charges_enabled: boolean;
+  payouts_enabled: boolean;
+  details_submitted: boolean;
+}
+
+export interface SeedData {
+  users?: MockUser[];
+  organizations?: Organization[];
+  profiles?: Profile[];
+  organizationMembers?: OrganizationMember[];
+  properties?: Property[];
+  units?: Unit[];
+  leases?: Lease[];
+  leaseTenants?: LeaseTenant[];
+  rentCharges?: RentCharge[];
+  payments?: Payment[];
+  stripeAccounts?: StripeAccount[];
+  maintenanceRequests?: MaintenanceRequest[];
+  maintenanceComments?: MaintenanceComment[];
+  maintenanceAttachments?: MaintenanceAttachment[];
+  documents?: Document[];
+  conversations?: Conversation[];
+  conversationParticipants?: ConversationParticipant[];
+  messages?: Message[];
+  stripePaymentIntents?: MockPaymentIntent[];
+  stripeConnectAccounts?: MockStripeConnectAccount[];
+}
+
+export interface MockStore {
+  // Auth
+  users: Map<string, MockUser>;
+  sessions: Map<string, MockSession>;
+
+  // Database tables (keyed by id)
+  organizations: Map<string, Organization>;
+  profiles: Map<string, Profile>;
+  organizationMembers: Map<string, OrganizationMember>;
+  properties: Map<string, Property>;
+  units: Map<string, Unit>;
+  leases: Map<string, Lease>;
+  leaseTenants: Map<string, LeaseTenant>;
+  rentCharges: Map<string, RentCharge>;
+  payments: Map<string, Payment>;
+  stripeAccounts: Map<string, StripeAccount>;
+  maintenanceRequests: Map<string, MaintenanceRequest>;
+  maintenanceComments: Map<string, MaintenanceComment>;
+  maintenanceAttachments: Map<string, MaintenanceAttachment>;
+  documents: Map<string, Document>;
+  conversations: Map<string, Conversation>;
+  conversationParticipants: Map<string, ConversationParticipant>;
+  messages: Map<string, Message>;
+
+  // Uploads (keyed by "bucket/path")
+  uploads: Map<string, MockUpload>;
+
+  // Stripe mocks
+  stripePaymentIntents: Map<string, MockPaymentIntent>;
+  stripeConnectAccounts: Map<string, MockStripeConnectAccount>;
+
+  // Operations
+  reset: () => void;
+  seed: (data: SeedData) => void;
+}
+
+export function createMockStore(): MockStore {
+  const store: MockStore = {
+    users: new Map(),
+    sessions: new Map(),
+    organizations: new Map(),
+    profiles: new Map(),
+    organizationMembers: new Map(),
+    properties: new Map(),
+    units: new Map(),
+    leases: new Map(),
+    leaseTenants: new Map(),
+    rentCharges: new Map(),
+    payments: new Map(),
+    stripeAccounts: new Map(),
+    maintenanceRequests: new Map(),
+    maintenanceComments: new Map(),
+    maintenanceAttachments: new Map(),
+    documents: new Map(),
+    conversations: new Map(),
+    conversationParticipants: new Map(),
+    messages: new Map(),
+    uploads: new Map(),
+    stripePaymentIntents: new Map(),
+    stripeConnectAccounts: new Map(),
+
+    reset() {
+      for (const key of Object.keys(store)) {
+        const value = (store as any)[key];
+        if (value instanceof Map) value.clear();
+      }
+    },
+
+    seed(data: SeedData) {
+      if (data.users) data.users.forEach((u) => store.users.set(u.id, u));
+      if (data.organizations) data.organizations.forEach((o) => store.organizations.set(o.id, o));
+      if (data.profiles) data.profiles.forEach((p) => store.profiles.set(p.id, p));
+      if (data.organizationMembers) data.organizationMembers.forEach((m) => store.organizationMembers.set(m.id, m));
+      if (data.properties) data.properties.forEach((p) => store.properties.set(p.id, p));
+      if (data.units) data.units.forEach((u) => store.units.set(u.id, u));
+      if (data.leases) data.leases.forEach((l) => store.leases.set(l.id, l));
+      if (data.leaseTenants) data.leaseTenants.forEach((lt) => store.leaseTenants.set(lt.id, lt));
+      if (data.rentCharges) data.rentCharges.forEach((rc) => store.rentCharges.set(rc.id, rc));
+      if (data.payments) data.payments.forEach((p) => store.payments.set(p.id, p));
+      if (data.stripeAccounts) data.stripeAccounts.forEach((s) => store.stripeAccounts.set(s.id, s));
+      if (data.maintenanceRequests) data.maintenanceRequests.forEach((mr) => store.maintenanceRequests.set(mr.id, mr));
+      if (data.maintenanceComments) data.maintenanceComments.forEach((mc) => store.maintenanceComments.set(mc.id, mc));
+      if (data.maintenanceAttachments) data.maintenanceAttachments.forEach((ma) => store.maintenanceAttachments.set(ma.id, ma));
+      if (data.documents) data.documents.forEach((d) => store.documents.set(d.id, d));
+      if (data.conversations) data.conversations.forEach((c) => store.conversations.set(c.id, c));
+      if (data.conversationParticipants) {
+        data.conversationParticipants.forEach((cp) =>
+          store.conversationParticipants.set(`${cp.conversation_id}:${cp.user_id}`, cp),
+        );
+      }
+      if (data.messages) data.messages.forEach((m) => store.messages.set(m.id, m));
+      if (data.stripePaymentIntents) data.stripePaymentIntents.forEach((pi) => store.stripePaymentIntents.set(pi.id, pi));
+      if (data.stripeConnectAccounts) data.stripeConnectAccounts.forEach((a) => store.stripeConnectAccounts.set(a.id, a));
+    },
+  };
+
+  return store;
+}
+```
+
+**Step 5: Run test to verify it passes**
+
+```bash
+cd /Users/allenhe/Documents/propnest && npx vitest run packages/mocks/src/store/__tests__/store.test.ts
+```
+
+Expected: PASS
+
+**Step 6: Write failing test for fixture factories**
+
+`packages/mocks/src/fixtures/__tests__/factories.test.ts`:
+
+```typescript
+import { describe, it, expect } from 'vitest';
+import { buildTenant, buildLandlord, buildManager } from '../user.factory';
+import { buildProperty, buildUnit, buildLease } from '../property.factory';
+import { buildPaymentRecord, buildRentCharge } from '../payment.factory';
+import { buildMaintenanceRequest } from '../maintenance.factory';
+
+describe('fixture factories', () => {
+  it('buildTenant produces a valid mock user', () => {
+    const tenant = buildTenant();
+    expect(tenant.id).toBeDefined();
+    expect(tenant.email).toContain('@');
+    expect(tenant.role).toBe('tenant');
+  });
+
+  it('buildLandlord produces an owner role', () => {
+    const landlord = buildLandlord();
+    expect(landlord.role).toBe('owner');
+  });
+
+  it('buildManager produces a manager role', () => {
+    const manager = buildManager();
+    expect(manager.role).toBe('manager');
+  });
+
+  it('buildTenant accepts overrides', () => {
+    const tenant = buildTenant({ email: 'custom@test.com' });
+    expect(tenant.email).toBe('custom@test.com');
+  });
+
+  it('buildProperty produces valid property', () => {
+    const prop = buildProperty({ organization_id: 'org-1' });
+    expect(prop.id).toBeDefined();
+    expect(prop.organization_id).toBe('org-1');
+    expect(prop.name).toBeDefined();
+  });
+
+  it('buildUnit produces valid unit', () => {
+    const unit = buildUnit({ property_id: 'prop-1' });
+    expect(unit.property_id).toBe('prop-1');
+  });
+
+  it('buildLease produces valid lease', () => {
+    const lease = buildLease({ unit_id: 'unit-1' });
+    expect(lease.unit_id).toBe('unit-1');
+    expect(lease.status).toBe('active');
+    expect(lease.rent_amount).toBeGreaterThan(0);
+  });
+
+  it('buildPaymentRecord produces valid payment', () => {
+    const payment = buildPaymentRecord({ lease_id: 'lease-1', paid_by: 'user-1' });
+    expect(payment.lease_id).toBe('lease-1');
+    expect(payment.status).toBe('pending');
+  });
+
+  it('buildMaintenanceRequest produces valid request', () => {
+    const req = buildMaintenanceRequest({ unit_id: 'unit-1', submitted_by: 'user-1' });
+    expect(req.unit_id).toBe('unit-1');
+    expect(req.status).toBe('open');
+  });
+});
+```
+
+**Step 7: Run test to verify it fails**
+
+```bash
+npx vitest run packages/mocks/src/fixtures/__tests__/factories.test.ts
+```
+
+Expected: FAIL — modules not found
+
+**Step 8: Implement factories**
+
+`packages/mocks/src/fixtures/user.factory.ts`:
+
+```typescript
+import { faker } from '@faker-js/faker';
+import type { MockUser } from '../store';
+
+export function buildTenant(overrides?: Partial<MockUser>): MockUser {
+  return {
+    id: faker.string.uuid(),
+    email: faker.internet.email(),
+    password: 'test-password-123',
+    role: 'tenant',
+    ...overrides,
+  };
+}
+
+export function buildLandlord(overrides?: Partial<MockUser>): MockUser {
+  return {
+    id: faker.string.uuid(),
+    email: faker.internet.email(),
+    password: 'test-password-123',
+    role: 'owner',
+    ...overrides,
+  };
+}
+
+export function buildManager(overrides?: Partial<MockUser>): MockUser {
+  return {
+    id: faker.string.uuid(),
+    email: faker.internet.email(),
+    password: 'test-password-123',
+    role: 'manager',
+    ...overrides,
+  };
+}
+```
+
+`packages/mocks/src/fixtures/property.factory.ts`:
+
+```typescript
+import { faker } from '@faker-js/faker';
+import type { Organization, Property, Unit, Lease, OrganizationMember, StripeAccount } from '@propnest/db';
+
+export function buildOrganization(overrides?: Partial<Organization>): Organization {
+  const name = faker.company.name();
+  return {
+    id: faker.string.uuid(),
+    name,
+    slug: faker.helpers.slugify(name).toLowerCase(),
+    created_at: faker.date.past().toISOString(),
+    updated_at: faker.date.recent().toISOString(),
+    ...overrides,
+  };
+}
+
+export function buildOrgMember(overrides?: Partial<OrganizationMember>): OrganizationMember {
+  return {
+    id: faker.string.uuid(),
+    organization_id: faker.string.uuid(),
+    user_id: faker.string.uuid(),
+    role: 'owner',
+    invited_at: faker.date.past().toISOString(),
+    accepted_at: faker.date.past().toISOString(),
+    ...overrides,
+  };
+}
+
+export function buildProperty(overrides?: Partial<Property>): Property {
+  return {
+    id: faker.string.uuid(),
+    organization_id: faker.string.uuid(),
+    name: faker.location.street(),
+    address_line1: faker.location.streetAddress(),
+    address_line2: null,
+    city: faker.location.city(),
+    state: faker.location.state({ abbreviated: true }),
+    zip: faker.location.zipCode(),
+    country: 'US',
+    property_type: faker.helpers.arrayElement(['single_family', 'multi_family', 'condo']),
+    year_built: faker.number.int({ min: 1950, max: 2025 }),
+    notes: null,
+    created_at: faker.date.past().toISOString(),
+    updated_at: faker.date.recent().toISOString(),
+    ...overrides,
+  };
+}
+
+export function buildUnit(overrides?: Partial<Unit>): Unit {
+  return {
+    id: faker.string.uuid(),
+    property_id: faker.string.uuid(),
+    unit_number: faker.helpers.arrayElement([null, 'A', 'B', '101', '202']),
+    bedrooms: faker.number.int({ min: 1, max: 5 }),
+    bathrooms: faker.helpers.arrayElement([1, 1.5, 2, 2.5, 3]),
+    square_feet: faker.number.int({ min: 400, max: 3000 }),
+    rent_amount: faker.number.int({ min: 800, max: 4000 }),
+    is_available: false,
+    notes: null,
+    created_at: faker.date.past().toISOString(),
+    updated_at: faker.date.recent().toISOString(),
+    ...overrides,
+  };
+}
+
+export function buildLease(overrides?: Partial<Lease>): Lease {
+  const startDate = faker.date.past();
+  return {
+    id: faker.string.uuid(),
+    unit_id: faker.string.uuid(),
+    status: 'active',
+    start_date: startDate.toISOString().split('T')[0],
+    end_date: faker.date.future({ refDate: startDate }).toISOString().split('T')[0],
+    rent_amount: faker.number.int({ min: 800, max: 4000 }),
+    security_deposit: faker.number.int({ min: 500, max: 4000 }),
+    rent_due_day: 1,
+    grace_period_days: 5,
+    late_fee_type: 'flat',
+    late_fee_amount: 50,
+    signed_at: startDate.toISOString(),
+    document_url: null,
+    notes: null,
+    created_at: startDate.toISOString(),
+    updated_at: faker.date.recent().toISOString(),
+    ...overrides,
+  };
+}
+
+export function buildStripeAccount(overrides?: Partial<StripeAccount>): StripeAccount {
+  return {
+    id: faker.string.uuid(),
+    organization_id: faker.string.uuid(),
+    stripe_account_id: `acct_${faker.string.alphanumeric(16)}`,
+    charges_enabled: true,
+    payouts_enabled: true,
+    details_submitted: true,
+    created_at: faker.date.past().toISOString(),
+    updated_at: faker.date.recent().toISOString(),
+    ...overrides,
+  };
+}
+```
+
+`packages/mocks/src/fixtures/payment.factory.ts`:
+
+```typescript
+import { faker } from '@faker-js/faker';
+import type { Payment, RentCharge } from '@propnest/db';
+import type { MockPaymentIntent } from '../store';
+
+export function buildRentCharge(overrides?: Partial<RentCharge>): RentCharge {
+  return {
+    id: faker.string.uuid(),
+    lease_id: faker.string.uuid(),
+    charge_type: 'rent',
+    amount: faker.number.int({ min: 800, max: 4000 }),
+    due_date: faker.date.soon().toISOString().split('T')[0],
+    description: null,
+    is_waived: false,
+    waived_by: null,
+    waived_at: null,
+    created_at: faker.date.recent().toISOString(),
+    ...overrides,
+  };
+}
+
+export function buildPaymentRecord(overrides?: Partial<Payment>): Payment {
+  return {
+    id: faker.string.uuid(),
+    lease_id: faker.string.uuid(),
+    rent_charge_id: null,
+    paid_by: faker.string.uuid(),
+    recorded_by: null,
+    method: 'stripe',
+    status: 'pending',
+    amount: faker.number.int({ min: 800, max: 4000 }),
+    payment_date: new Date().toISOString().split('T')[0],
+    stripe_payment_intent_id: `pi_${faker.string.alphanumeric(24)}`,
+    stripe_charge_id: null,
+    receipt_url: null,
+    notes: null,
+    created_at: faker.date.recent().toISOString(),
+    updated_at: faker.date.recent().toISOString(),
+    ...overrides,
+  };
+}
+
+export function buildMockPaymentIntent(overrides?: Partial<MockPaymentIntent>): MockPaymentIntent {
+  const id = `pi_${faker.string.alphanumeric(24)}`;
+  return {
+    id,
+    amount: faker.number.int({ min: 80000, max: 400000 }),
+    currency: 'usd',
+    status: 'requires_payment_method',
+    client_secret: `${id}_secret_${faker.string.alphanumeric(16)}`,
+    ...overrides,
+  };
+}
+```
+
+`packages/mocks/src/fixtures/maintenance.factory.ts`:
+
+```typescript
+import { faker } from '@faker-js/faker';
+import type { MaintenanceRequest, MaintenanceComment, MaintenanceAttachment } from '@propnest/db';
+
+export function buildMaintenanceRequest(overrides?: Partial<MaintenanceRequest>): MaintenanceRequest {
+  return {
+    id: faker.string.uuid(),
+    unit_id: faker.string.uuid(),
+    submitted_by: faker.string.uuid(),
+    assigned_to: null,
+    title: faker.helpers.arrayElement([
+      'Leaking faucet in kitchen',
+      'AC not cooling',
+      'Broken window latch',
+      'Water heater making noise',
+      'Garage door stuck',
+    ]),
+    description: faker.lorem.paragraph(),
+    status: 'open',
+    priority: 'medium',
+    category: faker.helpers.arrayElement(['plumbing', 'electrical', 'hvac', 'structural', 'appliance']),
+    scheduled_date: null,
+    completed_at: null,
+    estimated_cost: null,
+    actual_cost: null,
+    created_at: faker.date.recent().toISOString(),
+    updated_at: faker.date.recent().toISOString(),
+    ...overrides,
+  };
+}
+
+export function buildMaintenanceComment(overrides?: Partial<MaintenanceComment>): MaintenanceComment {
+  return {
+    id: faker.string.uuid(),
+    request_id: faker.string.uuid(),
+    author_id: faker.string.uuid(),
+    body: faker.lorem.sentence(),
+    is_internal: false,
+    created_at: faker.date.recent().toISOString(),
+    ...overrides,
+  };
+}
+
+export function buildMaintenanceAttachment(overrides?: Partial<MaintenanceAttachment>): MaintenanceAttachment {
+  return {
+    id: faker.string.uuid(),
+    request_id: faker.string.uuid(),
+    uploaded_by: faker.string.uuid(),
+    storage_path: `maintenance/${faker.string.uuid()}.jpg`,
+    mime_type: 'image/jpeg',
+    file_size_bytes: faker.number.int({ min: 50000, max: 5000000 }),
+    created_at: faker.date.recent().toISOString(),
+    ...overrides,
+  };
+}
+```
+
+`packages/mocks/src/fixtures/index.ts`:
+
+```typescript
+export { buildTenant, buildLandlord, buildManager } from './user.factory';
+export {
+  buildOrganization,
+  buildOrgMember,
+  buildProperty,
+  buildUnit,
+  buildLease,
+  buildStripeAccount,
+} from './property.factory';
+export { buildRentCharge, buildPaymentRecord, buildMockPaymentIntent } from './payment.factory';
+export { buildMaintenanceRequest, buildMaintenanceComment, buildMaintenanceAttachment } from './maintenance.factory';
+```
+
+**Step 9: Run test to verify it passes**
+
+```bash
+npx vitest run packages/mocks/src/fixtures/__tests__/factories.test.ts
+```
+
+Expected: PASS
+
+**Step 10: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add packages/mocks with MockStore, fixture factories, and tests"
+```
+
+---
+
+## Task 5: Create packages/mocks — Supabase Auth Handlers
+
+**Files:**
+- Create: `packages/mocks/src/handlers/supabase/auth.ts`
+- Create: `packages/mocks/src/handlers/supabase/jwt.ts`
+- Test: `packages/mocks/src/handlers/supabase/__tests__/auth.test.ts`
+
+**Step 1: Write failing test for auth handlers**
+
+`packages/mocks/src/handlers/supabase/__tests__/auth.test.ts`:
+
+```typescript
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { setupServer } from 'msw/node';
+import { createMockStore } from '../../../store';
+import { buildLandlord } from '../../../fixtures';
+import { createAuthHandlers } from '../auth';
+
+const SUPABASE_URL = 'http://localhost:54321';
+
+describe('Supabase Auth MSW handlers', () => {
+  const store = createMockStore();
+  const handlers = createAuthHandlers(SUPABASE_URL, store);
+  const server = setupServer(...handlers);
+
+  beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+  afterAll(() => server.close());
+  beforeEach(() => {
+    store.reset();
+    server.resetHandlers();
+  });
+
+  it('POST /auth/v1/signup creates a user and returns session', async () => {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'new@test.com', password: 'password123' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.user.email).toBe('new@test.com');
+    expect(body.session.access_token).toBeDefined();
+    expect(store.users.size).toBe(1);
+  });
+
+  it('POST /auth/v1/token?grant_type=password signs in existing user', async () => {
+    const user = buildLandlord({ email: 'existing@test.com', password: 'pass123' });
+    store.users.set(user.id, user);
+
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'existing@test.com', password: 'pass123' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.user.id).toBe(user.id);
+    expect(body.access_token).toBeDefined();
+  });
+
+  it('POST /auth/v1/token rejects wrong password', async () => {
+    const user = buildLandlord({ email: 'existing@test.com', password: 'pass123' });
+    store.users.set(user.id, user);
+
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'existing@test.com', password: 'wrong' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('GET /auth/v1/user returns user for valid token', async () => {
+    const user = buildLandlord({ email: 'me@test.com', password: 'pass' });
+    store.users.set(user.id, user);
+    // Sign in to get a token
+    const signIn = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'me@test.com', password: 'pass' }),
+    });
+    const { access_token } = await signIn.json();
+
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: { Authorization: `Bearer ${access_token}` },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.id).toBe(user.id);
+  });
+
+  it('POST /auth/v1/logout clears session', async () => {
+    const user = buildLandlord({ email: 'me@test.com', password: 'pass' });
+    store.users.set(user.id, user);
+    const signIn = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'me@test.com', password: 'pass' }),
+    });
+    const { access_token } = await signIn.json();
+    expect(store.sessions.size).toBe(1);
+
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${access_token}` },
+    });
+    expect(res.status).toBe(200);
+    expect(store.sessions.size).toBe(0);
+  });
+});
+```
+
+**Step 2: Run test to verify it fails**
+
+```bash
+npx vitest run packages/mocks/src/handlers/supabase/__tests__/auth.test.ts
+```
+
+**Step 3: Implement JWT helper**
+
+`packages/mocks/src/handlers/supabase/jwt.ts`:
+
+```typescript
+/**
+ * Deterministic JWT minting for test environments.
+ * NOT cryptographically secure — test only.
+ */
+
+function base64url(str: string): string {
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+export interface JwtPayload {
+  sub: string;
+  email: string;
+  role: string;
+  aud: string;
+  iat: number;
+  exp: number;
+}
+
+export function mintTestJwt(payload: Omit<JwtPayload, 'iat' | 'exp'>): string {
+  const now = Math.floor(Date.now() / 1000);
+  const fullPayload: JwtPayload = {
+    ...payload,
+    iat: now,
+    exp: now + 3600,
+  };
+  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const body = base64url(JSON.stringify(fullPayload));
+  // Fake signature — tests don't verify; the real Supabase client doesn't check signatures client-side
+  const sig = base64url('test-signature');
+  return `${header}.${body}.${sig}`;
+}
+
+export function decodeTestJwt(token: string): JwtPayload | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    return JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+  } catch {
+    return null;
+  }
+}
+```
+
+**Step 4: Implement auth handlers**
+
+`packages/mocks/src/handlers/supabase/auth.ts`:
+
+```typescript
+import { http, HttpResponse } from 'msw';
+import type { MockStore } from '../../store';
+import { mintTestJwt, decodeTestJwt } from './jwt';
+import { faker } from '@faker-js/faker';
+
+export function createAuthHandlers(supabaseUrl: string, store: MockStore) {
+  return [
+    // Sign up
+    http.post(`${supabaseUrl}/auth/v1/signup`, async ({ request }) => {
+      const { email, password, data: userMetadata } = (await request.json()) as {
+        email: string;
+        password: string;
+        data?: Record<string, unknown>;
+      };
+
+      // Check if user already exists
+      const existing = Array.from(store.users.values()).find((u) => u.email === email);
+      if (existing) {
+        return HttpResponse.json({ error: 'User already registered' }, { status: 400 });
+      }
+
+      const id = faker.string.uuid();
+      store.users.set(id, { id, email, password, role: 'tenant', user_metadata: userMetadata });
+
+      const access_token = mintTestJwt({ sub: id, email, role: 'authenticated', aud: 'authenticated' });
+      const refresh_token = faker.string.alphanumeric(32);
+      store.sessions.set(access_token, {
+        access_token,
+        refresh_token,
+        user_id: id,
+        expires_at: Date.now() + 3600_000,
+      });
+
+      return HttpResponse.json({
+        user: { id, email, role: 'authenticated', user_metadata: userMetadata ?? {} },
+        session: { access_token, refresh_token, expires_in: 3600, token_type: 'bearer' },
+      });
+    }),
+
+    // Sign in (password grant)
+    http.post(`${supabaseUrl}/auth/v1/token`, async ({ request }) => {
+      const url = new URL(request.url);
+      const grantType = url.searchParams.get('grant_type');
+      const body = (await request.json()) as { email?: string; password?: string; refresh_token?: string };
+
+      if (grantType === 'password') {
+        const user = Array.from(store.users.values()).find(
+          (u) => u.email === body.email && u.password === body.password,
+        );
+        if (!user) {
+          return HttpResponse.json({ error: 'Invalid login credentials' }, { status: 400 });
+        }
+
+        const access_token = mintTestJwt({
+          sub: user.id,
+          email: user.email,
+          role: 'authenticated',
+          aud: 'authenticated',
+        });
+        const refresh_token = faker.string.alphanumeric(32);
+        store.sessions.set(access_token, {
+          access_token,
+          refresh_token,
+          user_id: user.id,
+          expires_at: Date.now() + 3600_000,
+        });
+
+        return HttpResponse.json({
+          access_token,
+          refresh_token,
+          expires_in: 3600,
+          token_type: 'bearer',
+          user: { id: user.id, email: user.email, role: 'authenticated', user_metadata: user.user_metadata ?? {} },
+        });
+      }
+
+      if (grantType === 'refresh_token') {
+        const session = Array.from(store.sessions.values()).find((s) => s.refresh_token === body.refresh_token);
+        if (!session) {
+          return HttpResponse.json({ error: 'Invalid refresh token' }, { status: 400 });
+        }
+        const user = store.users.get(session.user_id);
+        if (!user) {
+          return HttpResponse.json({ error: 'User not found' }, { status: 400 });
+        }
+
+        // Rotate tokens
+        store.sessions.delete(session.access_token);
+        const access_token = mintTestJwt({
+          sub: user.id,
+          email: user.email,
+          role: 'authenticated',
+          aud: 'authenticated',
+        });
+        const refresh_token = faker.string.alphanumeric(32);
+        store.sessions.set(access_token, {
+          access_token,
+          refresh_token,
+          user_id: user.id,
+          expires_at: Date.now() + 3600_000,
+        });
+
+        return HttpResponse.json({
+          access_token,
+          refresh_token,
+          expires_in: 3600,
+          token_type: 'bearer',
+          user: { id: user.id, email: user.email, role: 'authenticated', user_metadata: user.user_metadata ?? {} },
+        });
+      }
+
+      return HttpResponse.json({ error: 'Unsupported grant type' }, { status: 400 });
+    }),
+
+    // Get current user
+    http.get(`${supabaseUrl}/auth/v1/user`, ({ request }) => {
+      const auth = request.headers.get('Authorization');
+      if (!auth) return HttpResponse.json({ error: 'No token' }, { status: 401 });
+
+      const token = auth.replace('Bearer ', '');
+      const session = store.sessions.get(token);
+      if (!session) return HttpResponse.json({ error: 'Invalid token' }, { status: 401 });
+
+      const user = store.users.get(session.user_id);
+      if (!user) return HttpResponse.json({ error: 'User not found' }, { status: 401 });
+
+      return HttpResponse.json({
+        id: user.id,
+        email: user.email,
+        role: 'authenticated',
+        user_metadata: user.user_metadata ?? {},
+      });
+    }),
+
+    // Logout
+    http.post(`${supabaseUrl}/auth/v1/logout`, ({ request }) => {
+      const auth = request.headers.get('Authorization');
+      if (auth) {
+        const token = auth.replace('Bearer ', '');
+        store.sessions.delete(token);
+      }
+      return HttpResponse.json({});
+    }),
+  ];
+}
+```
+
+**Step 5: Run test to verify it passes**
+
+```bash
+npx vitest run packages/mocks/src/handlers/supabase/__tests__/auth.test.ts
+```
+
+Expected: PASS
+
+**Step 6: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add Supabase Auth MSW handlers with JWT minting and tests"
+```
+
+---
+
+## Task 6: Create packages/mocks — PostgREST REST Handlers
+
+This is the most complex handler — it simulates PostgREST query parameter parsing and RLS-like filtering.
+
+**Files:**
+- Create: `packages/mocks/src/handlers/supabase/rest.ts`
+- Test: `packages/mocks/src/handlers/supabase/__tests__/rest.test.ts`
+
+**Step 1: Write failing test**
+
+`packages/mocks/src/handlers/supabase/__tests__/rest.test.ts`:
+
+```typescript
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { setupServer } from 'msw/node';
+import { createMockStore } from '../../../store';
+import { createRestHandlers } from '../rest';
+import { createAuthHandlers } from '../auth';
+import {
+  buildLandlord,
+  buildTenant,
+  buildOrganization,
+  buildOrgMember,
+  buildProperty,
+  buildUnit,
+} from '../../../fixtures';
+
+const SUPABASE_URL = 'http://localhost:54321';
+
+describe('PostgREST MSW handlers', () => {
+  const store = createMockStore();
+  const handlers = [
+    ...createAuthHandlers(SUPABASE_URL, store),
+    ...createRestHandlers(SUPABASE_URL, store),
+  ];
+  const server = setupServer(...handlers);
+
+  beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+  afterAll(() => server.close());
+  beforeEach(() => {
+    store.reset();
+    server.resetHandlers();
+  });
+
+  async function signIn(email: string, password: string): Promise<string> {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    const { access_token } = await res.json();
+    return access_token;
+  }
+
+  it('GET /rest/v1/properties returns properties for org member', async () => {
+    const owner = buildLandlord({ email: 'owner@test.com', password: 'pass' });
+    const org = buildOrganization();
+    const member = buildOrgMember({ organization_id: org.id, user_id: owner.id, role: 'owner' });
+    const prop = buildProperty({ organization_id: org.id });
+
+    store.seed({
+      users: [owner],
+      organizations: [org],
+      organizationMembers: [member],
+      properties: [prop],
+    });
+
+    const token = await signIn('owner@test.com', 'pass');
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/properties?select=*`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        apikey: 'test-anon-key',
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toHaveLength(1);
+    expect(data[0].id).toBe(prop.id);
+  });
+
+  it('GET /rest/v1/properties filters by eq parameter', async () => {
+    const owner = buildLandlord({ email: 'owner@test.com', password: 'pass' });
+    const org = buildOrganization();
+    const member = buildOrgMember({ organization_id: org.id, user_id: owner.id, role: 'owner' });
+    const prop1 = buildProperty({ organization_id: org.id, name: 'First' });
+    const prop2 = buildProperty({ organization_id: org.id, name: 'Second' });
+
+    store.seed({
+      users: [owner],
+      organizations: [org],
+      organizationMembers: [member],
+      properties: [prop1, prop2],
+    });
+
+    const token = await signIn('owner@test.com', 'pass');
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/properties?name=eq.First&select=*`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        apikey: 'test-anon-key',
+      },
+    });
+
+    const data = await res.json();
+    expect(data).toHaveLength(1);
+    expect(data[0].name).toBe('First');
+  });
+
+  it('POST /rest/v1/properties inserts a new record', async () => {
+    const owner = buildLandlord({ email: 'owner@test.com', password: 'pass' });
+    const org = buildOrganization();
+    const member = buildOrgMember({ organization_id: org.id, user_id: owner.id, role: 'owner' });
+
+    store.seed({ users: [owner], organizations: [org], organizationMembers: [member] });
+
+    const token = await signIn('owner@test.com', 'pass');
+    const newProp = {
+      organization_id: org.id,
+      name: 'New Property',
+      address_line1: '123 Test St',
+      city: 'Testville',
+      state: 'CA',
+      zip: '90210',
+    };
+
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/properties`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        apikey: 'test-anon-key',
+        'Content-Type': 'application/json',
+        Prefer: 'return=representation',
+      },
+      body: JSON.stringify(newProp),
+    });
+
+    expect(res.status).toBe(201);
+    const data = await res.json();
+    expect(data[0].name).toBe('New Property');
+    expect(store.properties.size).toBe(1);
+  });
+
+  // RLS simulation — not a security test
+  it('tenant cannot see properties they are not associated with', async () => {
+    const owner = buildLandlord({ email: 'owner@test.com', password: 'pass' });
+    const tenant = buildTenant({ email: 'tenant@test.com', password: 'pass' });
+    const org = buildOrganization();
+    const member = buildOrgMember({ organization_id: org.id, user_id: owner.id, role: 'owner' });
+    const prop = buildProperty({ organization_id: org.id });
+
+    store.seed({
+      users: [owner, tenant],
+      organizations: [org],
+      organizationMembers: [member],
+      properties: [prop],
+    });
+
+    const token = await signIn('tenant@test.com', 'pass');
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/properties?select=*`, {
+      headers: { Authorization: `Bearer ${token}`, apikey: 'test-anon-key' },
+    });
+
+    const data = await res.json();
+    // RLS simulation — not a security test
+    expect(data).toHaveLength(0);
+  });
+});
+```
+
+**Step 2: Run test to verify it fails, then implement**
+
+The implementation for `rest.ts` is the most complex part of the mock layer. It needs to:
+1. Parse PostgREST query params (`eq.`, `neq.`, `gt.`, `lt.`, `like.`, `in.()`, `is.null`, `select=`, `order=`, `limit=`, `offset=`)
+2. Route to the correct Map in MockStore based on table name
+3. Apply RLS-like filtering based on the requesting user's org membership / lease tenant status
+4. Support `Prefer: return=representation` for POST/PATCH
+
+The full implementation is ~300–400 lines. The implementing agent should:
+- Create a `parsePostgrestFilters(searchParams)` utility
+- Create a `getTableData(store, tableName)` function that maps table names to store Maps
+- Create `applyRlsFilter(store, tableName, records, userId)` that simulates RLS (with `// RLS simulation — not a security test` comment)
+- Wire it all together in the MSW handler
+
+**Step 3: Run tests to verify they pass, then commit**
+
+```bash
+npx vitest run packages/mocks/src/handlers/supabase/__tests__/rest.test.ts
+git add -A
+git commit -m "feat: add PostgREST MSW handlers with query param parsing and RLS simulation"
+```
+
+---
+
+## Task 7: Create packages/mocks — Storage Handlers
+
+**Files:**
+- Create: `packages/mocks/src/handlers/supabase/storage.ts`
+- Test: `packages/mocks/src/handlers/supabase/__tests__/storage.test.ts`
+
+**Step 1: Write failing test**
+
+Test uploading a file, retrieving it, and generating a signed URL. Tests should verify store state.
+
+**Step 2: Implement storage handlers**
+
+Three handlers:
+- `POST /storage/v1/object/:bucket/*path` → store in `MockStore.uploads`
+- `GET /storage/v1/object/sign/:bucket/*path` → return fake signed URL
+- `GET /storage/v1/object/:bucket/*path` → return stored data or 1x1 PNG placeholder
+
+**Step 3: Run tests, commit**
+
+```bash
+git add -A
+git commit -m "feat: add Supabase Storage MSW handlers with upload/download/sign"
+```
+
+---
+
+## Task 8: Create packages/mocks — Stripe Handlers
+
+**Files:**
+- Create: `packages/mocks/src/handlers/stripe/payment-intents.ts`
+- Create: `packages/mocks/src/handlers/stripe/accounts.ts`
+- Create: `packages/mocks/src/handlers/stripe/webhook-utils.ts`
+- Test: `packages/mocks/src/handlers/stripe/__tests__/stripe.test.ts`
+
+**Step 1: Write failing test**
+
+Test creating a PaymentIntent, confirming it, creating a Connect account, and generating a webhook test header.
+
+**Step 2: Implement Stripe handlers**
+
+- `POST https://api.stripe.com/v1/payment_intents` → create in `store.stripePaymentIntents`
+- `POST https://api.stripe.com/v1/payment_intents/:id/confirm` → update status to `succeeded`
+- `POST https://api.stripe.com/v1/accounts` → create in `store.stripeConnectAccounts`
+- `POST https://api.stripe.com/v1/account_links` → return fake URL
+- `webhook-utils.ts` → `simulateStripeWebhook(store, eventType, paymentIntentId)` that mutates store and can be called from tests directly
+
+**Step 3: Run tests, commit**
+
+```bash
+git add -A
+git commit -m "feat: add Stripe MSW handlers for PaymentIntents, Accounts, and webhook utils"
+```
+
+---
+
+## Task 9: Create packages/mocks — Edge Function Handlers
+
+**Files:**
+- Create: `packages/mocks/src/handlers/edge-functions/create-payment-intent.ts`
+- Create: `packages/mocks/src/handlers/edge-functions/stripe-webhook.ts`
+- Test: `packages/mocks/src/handlers/edge-functions/__tests__/edge-functions.test.ts`
+
+**Step 1: Write failing test**
+
+Test the full payment roundtrip: call create-payment-intent handler → get client_secret → call stripe-webhook handler → verify payment status updated in store.
+
+**Step 2: Implement**
+
+These handlers mirror the Deno Edge Functions in `supabase/functions/` but run in-process against MockStore. They:
+- Validate the JWT from the Authorization header
+- Check lease tenant membership in store
+- Create a MockPaymentIntent in store
+- Return client_secret
+- For webhook: verify event type, update payment status in store
+
+**Step 3: Run tests, commit**
+
+```bash
+git add -A
+git commit -m "feat: add Edge Function MSW handlers for payment intent creation and webhook"
+```
+
+---
+
+## Task 10: Create packages/mocks — Realtime WebSocket Server
+
+**Files:**
+- Create: `packages/mocks/src/realtime/ws-server.ts`
+- Test: `packages/mocks/src/realtime/__tests__/ws-server.test.ts`
+
+**Step 1: Write failing test**
+
+Test Phoenix protocol: connect, join channel, receive heartbeat reply, receive broadcast, leave.
+
+**Step 2: Implement MockRealtimeServer**
+
+~200 lines using `ws` package:
+- Listen on configurable port (default `MSW_REALTIME_PORT=4001`)
+- Implement Phoenix protocol subset: `phx_join` → reply ok, `heartbeat` → reply ok, `phx_leave` → reply ok
+- Expose `broadcast(topic, event, payload)` for tests to trigger events
+- Track connected clients and their channel subscriptions
+
+**Step 3: Run tests, commit**
+
+```bash
+git add -A
+git commit -m "feat: add MockRealtimeServer with Phoenix protocol subset and broadcast API"
+```
+
+---
+
+## Task 11: Create packages/mocks — Scenario DSL
+
+**Files:**
+- Create: `packages/mocks/src/scenarios/landlord-with-two-tenants.ts`
+- Create: `packages/mocks/src/scenarios/overdue-payment.ts`
+- Create: `packages/mocks/src/scenarios/maintenance-pending.ts`
+- Create: `packages/mocks/src/scenarios/stripe-onboarding-pending.ts`
+- Create: `packages/mocks/src/scenarios/realtime-messaging.ts`
+- Create: `packages/mocks/src/scenarios/multi-tenant-isolation.ts`
+- Create: `packages/mocks/src/scenarios/index.ts`
+- Test: `packages/mocks/src/scenarios/__tests__/scenarios.test.ts`
+
+**Step 1: Write failing test**
+
+```typescript
+import { describe, it, expect, beforeEach } from 'vitest';
+import { createMockStore } from '../../store';
+import * as scenarios from '../index';
+
+describe('Scenario DSL', () => {
+  it('landlordWithTwoTenants creates a full org with 2 tenants', () => {
+    const store = createMockStore();
+    const data = scenarios.landlordWithTwoTenants();
+    store.seed(data);
+
+    expect(store.users.size).toBe(3); // 1 landlord + 2 tenants
+    expect(store.organizations.size).toBe(1);
+    expect(store.properties.size).toBeGreaterThanOrEqual(1);
+    expect(store.leases.size).toBeGreaterThanOrEqual(1);
+    expect(store.leaseTenants.size).toBe(2);
+  });
+
+  it('overduePayment creates a scenario with a past-due charge', () => {
+    const store = createMockStore();
+    const data = scenarios.overduePayment();
+    store.seed(data);
+
+    const charges = Array.from(store.rentCharges.values());
+    const overdue = charges.find((c) => new Date(c.due_date) < new Date());
+    expect(overdue).toBeDefined();
+  });
+
+  it('multiTenantIsolation creates two separate orgs', () => {
+    const store = createMockStore();
+    const data = scenarios.multiTenantIsolation();
+    store.seed(data);
+
+    expect(store.organizations.size).toBe(2);
+  });
+});
+```
+
+**Step 2: Implement each scenario**
+
+Each scenario function returns `SeedData` and uses the fixture factories. Example:
+
+```typescript
+// packages/mocks/src/scenarios/landlord-with-two-tenants.ts
+import type { SeedData } from '../store';
+import { buildLandlord, buildTenant, buildOrganization, buildOrgMember, buildProperty, buildUnit, buildLease, buildStripeAccount } from '../fixtures';
+import type { LeaseTenant } from '@propnest/db';
+import { faker } from '@faker-js/faker';
+
+export function landlordWithTwoTenants(): SeedData {
+  const landlord = buildLandlord({ email: 'landlord@propnest-test.com', password: 'test123' });
+  const tenant1 = buildTenant({ email: 'tenant1@propnest-test.com', password: 'test123' });
+  const tenant2 = buildTenant({ email: 'tenant2@propnest-test.com', password: 'test123' });
+  const org = buildOrganization({ name: 'Sunny Properties' });
+  const member = buildOrgMember({ organization_id: org.id, user_id: landlord.id, role: 'owner' });
+  const stripeAcct = buildStripeAccount({ organization_id: org.id });
+  const property = buildProperty({ organization_id: org.id, name: '123 Oak Street' });
+  const unit1 = buildUnit({ property_id: property.id, unit_number: 'A' });
+  const unit2 = buildUnit({ property_id: property.id, unit_number: 'B' });
+  const lease1 = buildLease({ unit_id: unit1.id, rent_amount: 1500 });
+  const lease2 = buildLease({ unit_id: unit2.id, rent_amount: 1800 });
+
+  const lt1: LeaseTenant = {
+    id: faker.string.uuid(),
+    lease_id: lease1.id,
+    user_id: tenant1.id,
+    is_primary: true,
+    invited_at: faker.date.past().toISOString(),
+    accepted_at: faker.date.past().toISOString(),
+  };
+  const lt2: LeaseTenant = {
+    id: faker.string.uuid(),
+    lease_id: lease2.id,
+    user_id: tenant2.id,
+    is_primary: true,
+    invited_at: faker.date.past().toISOString(),
+    accepted_at: faker.date.past().toISOString(),
+  };
+
+  return {
+    users: [landlord, tenant1, tenant2],
+    organizations: [org],
+    organizationMembers: [member],
+    stripeAccounts: [stripeAcct],
+    properties: [property],
+    units: [unit1, unit2],
+    leases: [lease1, lease2],
+    leaseTenants: [lt1, lt2],
+  };
+}
+```
+
+**Step 3: Run tests, commit**
+
+```bash
+git add -A
+git commit -m "feat: add Scenario DSL with 6 canonical test scenarios"
+```
+
+---
+
+## Task 12: Wire packages/mocks — Server + Browser + Index Exports
+
+**Files:**
+- Create: `packages/mocks/src/server.ts`
+- Create: `packages/mocks/src/browser.ts`
+- Create: `packages/mocks/src/index.ts`
+- Create: `packages/mocks/vitest.config.ts`
+
+**Step 1: Create server.ts (Node/Vitest)**
+
+```typescript
+import { setupServer } from 'msw/node';
+import { createMockStore } from './store';
+import { createAuthHandlers } from './handlers/supabase/auth';
+import { createRestHandlers } from './handlers/supabase/rest';
+import { createStorageHandlers } from './handlers/supabase/storage';
+import { createPaymentIntentHandlers } from './handlers/stripe/payment-intents';
+import { createAccountHandlers } from './handlers/stripe/accounts';
+import { createEdgeFunctionHandlers } from './handlers/edge-functions/create-payment-intent';
+import { createStripeWebhookHandlers } from './handlers/edge-functions/stripe-webhook';
+
+const SUPABASE_URL = process.env.SUPABASE_URL ?? 'http://localhost:54321';
+
+export function createMockServer(supabaseUrl = SUPABASE_URL) {
+  const store = createMockStore();
+
+  const handlers = [
+    ...createAuthHandlers(supabaseUrl, store),
+    ...createRestHandlers(supabaseUrl, store),
+    ...createStorageHandlers(supabaseUrl, store),
+    ...createPaymentIntentHandlers(store),
+    ...createAccountHandlers(store),
+    ...createEdgeFunctionHandlers(supabaseUrl, store),
+    ...createStripeWebhookHandlers(supabaseUrl, store),
+  ];
+
+  const server = setupServer(...handlers);
+
+  return { server, store };
+}
+```
+
+**Step 2: Create browser.ts (Playwright)**
+
+```typescript
+import { setupWorker } from 'msw/browser';
+import { createMockStore } from './store';
+import { createAuthHandlers } from './handlers/supabase/auth';
+import { createRestHandlers } from './handlers/supabase/rest';
+import { createStorageHandlers } from './handlers/supabase/storage';
+import { createPaymentIntentHandlers } from './handlers/stripe/payment-intents';
+import { createAccountHandlers } from './handlers/stripe/accounts';
+
+const SUPABASE_URL = (typeof window !== 'undefined' && (window as any).__SUPABASE_URL__) ?? 'http://localhost:54321';
+
+export function createMockWorker(supabaseUrl = SUPABASE_URL) {
+  const store = createMockStore();
+
+  const handlers = [
+    ...createAuthHandlers(supabaseUrl, store),
+    ...createRestHandlers(supabaseUrl, store),
+    ...createStorageHandlers(supabaseUrl, store),
+    ...createPaymentIntentHandlers(store),
+    ...createAccountHandlers(store),
+  ];
+
+  const worker = setupWorker(...handlers);
+
+  return { worker, store };
+}
+```
+
+**Step 3: Create index.ts**
+
+```typescript
+export { createMockStore } from './store';
+export type { MockStore, MockUser, MockSession, MockUpload, MockPaymentIntent, SeedData } from './store';
+export * from './fixtures';
+export { createMockServer } from './server';
+```
+
+**Step 4: Commit**
+
+```bash
+git add -A
+git commit -m "feat: wire packages/mocks server, browser, and index exports"
+```
+
+---
+
+## Task 13: Create packages/test-utils (RLS Integration Suite Helpers)
+
+**Files:**
+- Create: `packages/test-utils/package.json`
+- Create: `packages/test-utils/tsconfig.json`
+- Create: `packages/test-utils/src/env.ts`
+- Create: `packages/test-utils/src/auth-helpers.ts`
+- Create: `packages/test-utils/src/rls-helpers.ts`
+- Create: `packages/test-utils/src/seed-helpers.ts`
+- Create: `packages/test-utils/src/reset.ts`
+- Create: `packages/test-utils/src/stripe-helpers.ts`
+- Create: `packages/test-utils/src/index.ts`
+
+**Step 1: Create package.json**
+
+```json
+{
+  "name": "@propnest/test-utils",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.0",
+    "@propnest/db": "workspace:*"
+  }
+}
+```
+
+**Step 2: Create env.ts (fails loudly if env vars are missing)**
+
+```typescript
+if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  throw new Error(
+    '@propnest/test-utils: SUPABASE_SERVICE_ROLE_KEY is required. ' +
+    'This package is for the RLS integration suite only. ' +
+    'Run `supabase start` and set the env var before importing.'
+  );
+}
+
+if (!process.env.SUPABASE_URL) {
+  throw new Error('@propnest/test-utils: SUPABASE_URL is required.');
+}
+
+export const SUPABASE_URL = process.env.SUPABASE_URL;
+export const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+export const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? '';
+```
+
+**Step 3: Create auth-helpers.ts**
+
+```typescript
+import { createClient } from '@supabase/supabase-js';
+import { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_ANON_KEY } from './env';
+
+export function getServiceRoleClient() {
+  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}
+
+export function getAnonClient() {
+  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}
+
+export async function createAuthUser(email: string, password: string) {
+  const admin = getServiceRoleClient();
+  const { data, error } = await admin.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true,
+  });
+  if (error) throw new Error(`Failed to create user: ${error.message}`);
+  return data.user;
+}
+
+export async function signInAsUser(email: string, password: string) {
+  const client = getAnonClient();
+  const { data, error } = await client.auth.signInWithPassword({ email, password });
+  if (error) throw new Error(`Failed to sign in: ${error.message}`);
+  return { client, user: data.user!, session: data.session! };
+}
+```
+
+**Step 4: Create rls-helpers.ts**
+
+```typescript
+import type { SupabaseClient } from '@supabase/supabase-js';
+
+export async function assertRLSVisible(
+  client: SupabaseClient,
+  table: string,
+  filter: Record<string, unknown>,
+  expectedCount: number,
+) {
+  let query = client.from(table).select('id');
+  for (const [key, value] of Object.entries(filter)) {
+    query = query.eq(key, value);
+  }
+  const { data, error } = await query;
+  if (error) throw new Error(`RLS query failed: ${error.message}`);
+  if (data.length !== expectedCount) {
+    throw new Error(
+      `RLS assertion failed: expected ${expectedCount} rows in ${table}, got ${data.length}`,
+    );
+  }
+}
+
+export async function assertRLSNotVisible(
+  client: SupabaseClient,
+  table: string,
+  filter: Record<string, unknown>,
+) {
+  await assertRLSVisible(client, table, filter, 0);
+}
+```
+
+**Step 5: Create seed-helpers.ts**
+
+```typescript
+import { faker } from '@faker-js/faker';
+import { getServiceRoleClient } from './auth-helpers';
+
+const admin = getServiceRoleClient();
+
+export async function createOrganization(name?: string) {
+  const { data, error } = await admin
+    .from('organizations')
+    .insert({ name: name ?? faker.company.name(), slug: faker.helpers.slugify(name ?? faker.company.name()).toLowerCase() })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function addOrgMember(organizationId: string, userId: string, role: 'owner' | 'manager') {
+  const { data, error } = await admin
+    .from('organization_members')
+    .insert({ organization_id: organizationId, user_id: userId, role, accepted_at: new Date().toISOString() })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function createProperty(organizationId: string, name?: string) {
+  const { data, error } = await admin
+    .from('properties')
+    .insert({
+      organization_id: organizationId,
+      name: name ?? faker.location.street(),
+      address_line1: faker.location.streetAddress(),
+      city: faker.location.city(),
+      state: faker.location.state({ abbreviated: true }),
+      zip: faker.location.zipCode(),
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function createUnit(propertyId: string, unitNumber?: string) {
+  const { data, error } = await admin
+    .from('units')
+    .insert({ property_id: propertyId, unit_number: unitNumber ?? null })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function createLease(unitId: string, rentAmount: number) {
+  const { data, error } = await admin
+    .from('leases')
+    .insert({
+      unit_id: unitId,
+      status: 'active',
+      start_date: faker.date.past().toISOString().split('T')[0],
+      rent_amount: rentAmount,
+      rent_due_day: 1,
+      grace_period_days: 5,
+      late_fee_type: 'flat',
+      late_fee_amount: 50,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function addLeaseTenant(leaseId: string, userId: string, isPrimary = true) {
+  const { data, error } = await admin
+    .from('lease_tenants')
+    .insert({
+      lease_id: leaseId,
+      user_id: userId,
+      is_primary: isPrimary,
+      accepted_at: new Date().toISOString(),
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+```
+
+**Step 6: Create reset.ts**
+
+```typescript
+import { getServiceRoleClient } from './auth-helpers';
+
+/** Truncate all tables in FK-safe order via service role. */
+export async function truncateAll() {
+  const admin = getServiceRoleClient();
+
+  // Order matters — child tables first to avoid FK violations
+  const tables = [
+    'maintenance_attachments',
+    'maintenance_comments',
+    'maintenance_requests',
+    'messages',
+    'conversation_participants',
+    'conversations',
+    'documents',
+    'payments',
+    'rent_charges',
+    'lease_tenants',
+    'leases',
+    'units',
+    'properties',
+    'stripe_accounts',
+    'organization_members',
+    'organizations',
+    'profiles',
+  ];
+
+  for (const table of tables) {
+    const { error } = await admin.rpc('truncate_table', { table_name: table });
+    if (error) {
+      // Fallback: delete all rows
+      await admin.from(table).delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    }
+  }
+}
+```
+
+**Step 7: Create index.ts and commit**
+
+```typescript
+export { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } from './env';
+export { getServiceRoleClient, getAnonClient, createAuthUser, signInAsUser } from './auth-helpers';
+export { assertRLSVisible, assertRLSNotVisible } from './rls-helpers';
+export { createOrganization, addOrgMember, createProperty, createUnit, createLease, addLeaseTenant } from './seed-helpers';
+export { truncateAll } from './reset';
+```
+
+```bash
+pnpm install
+git add -A
+git commit -m "feat: add packages/test-utils with RLS integration suite helpers"
+```
+
+---
+
+## Task 14: Create packages/repositories (Interface Layer)
+
+**Files:**
+- Create: `packages/repositories/package.json`
+- Create: `packages/repositories/tsconfig.json`
+- Create: `packages/repositories/src/interfaces.ts`
+- Create: `packages/repositories/src/supabase/payment.repository.ts`
+- Create: `packages/repositories/src/mock/payment.repository.ts`
+- Create: `packages/repositories/src/supabase/maintenance.repository.ts`
+- Create: `packages/repositories/src/mock/maintenance.repository.ts`
+- Create: `packages/repositories/src/supabase/property.repository.ts`
+- Create: `packages/repositories/src/mock/property.repository.ts`
+- Create: `packages/repositories/src/index.ts`
+- Test: `packages/repositories/src/__tests__/mock-repos.test.ts`
+
+**Step 1: Define interfaces**
+
+```typescript
+// packages/repositories/src/interfaces.ts
+import type { Payment, MaintenanceRequest, Property, Unit } from '@propnest/db';
+
+export interface IPaymentRepository {
+  getByLeaseId(leaseId: string): Promise<Payment[]>;
+  getById(id: string): Promise<Payment | null>;
+  create(payment: Omit<Payment, 'id' | 'created_at' | 'updated_at'>): Promise<Payment>;
+}
+
+export interface IMaintenanceRepository {
+  getByUnitId(unitId: string): Promise<MaintenanceRequest[]>;
+  getById(id: string): Promise<MaintenanceRequest | null>;
+  create(request: Omit<MaintenanceRequest, 'id' | 'created_at' | 'updated_at'>): Promise<MaintenanceRequest>;
+  updateStatus(id: string, status: MaintenanceRequest['status']): Promise<MaintenanceRequest>;
+}
+
+export interface IPropertyRepository {
+  getByOrgId(orgId: string): Promise<Property[]>;
+  getById(id: string): Promise<Property | null>;
+  getUnits(propertyId: string): Promise<Unit[]>;
+}
+```
+
+**Step 2: Write failing test for mock implementations**
+
+Test that MockPaymentRepository backed by MockStore correctly creates, reads, and filters.
+
+**Step 3: Implement mock repositories (backed by MockStore from @propnest/mocks)**
+
+**Step 4: Implement Supabase repositories (thin wrappers around SupabaseClient)**
+
+**Step 5: Run tests, commit**
+
+```bash
+git add -A
+git commit -m "feat: add packages/repositories with interfaces, Supabase and mock implementations"
+```
+
+---
+
+## Task 15: Write RLS Integration Suite
+
+**Files:**
+- Create: `supabase/tests/rls/vitest.config.ts`
+- Create: `supabase/tests/rls/setup.ts`
+- Create: `supabase/tests/rls/payments-rls.test.ts`
+- Create: `supabase/tests/rls/maintenance-rls.test.ts`
+- Create: `supabase/tests/rls/properties-rls.test.ts`
+
+**Step 1: Create vitest config for RLS suite**
+
+```typescript
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    include: ['supabase/tests/rls/**/*.test.ts'],
+    setupFiles: ['supabase/tests/rls/setup.ts'],
+    testTimeout: 30000, // DB operations can be slow
+  },
+});
+```
+
+**Step 2: Create setup.ts**
+
+```typescript
+import { truncateAll } from '@propnest/test-utils';
+import { beforeAll } from 'vitest';
+
+beforeAll(async () => {
+  await truncateAll();
+});
+```
+
+**Step 3: Write payments-rls.test.ts**
+
+```typescript
+import { describe, it, beforeAll } from 'vitest';
+import {
+  createAuthUser,
+  signInAsUser,
+  createOrganization,
+  addOrgMember,
+  createProperty,
+  createUnit,
+  createLease,
+  addLeaseTenant,
+  assertRLSVisible,
+  assertRLSNotVisible,
+  getServiceRoleClient,
+} from '@propnest/test-utils';
+
+describe('Payments RLS', () => {
+  let orgAOwner: any;
+  let orgBOwner: any;
+  let tenantA: any;
+  let orgA: any;
+  let orgB: any;
+  let leaseA: any;
+
+  beforeAll(async () => {
+    // Create two separate orgs
+    orgAOwner = await createAuthUser('owner-a@test.com', 'pass123');
+    orgBOwner = await createAuthUser('owner-b@test.com', 'pass123');
+    tenantA = await createAuthUser('tenant-a@test.com', 'pass123');
+
+    orgA = await createOrganization('Org A');
+    orgB = await createOrganization('Org B');
+
+    await addOrgMember(orgA.id, orgAOwner.id, 'owner');
+    await addOrgMember(orgB.id, orgBOwner.id, 'owner');
+
+    const propA = await createProperty(orgA.id);
+    const unitA = await createUnit(propA.id, 'A');
+    leaseA = await createLease(unitA.id, 1500);
+    await addLeaseTenant(leaseA.id, tenantA.id);
+
+    // Insert a payment via service role
+    const admin = getServiceRoleClient();
+    await admin.from('payments').insert({
+      lease_id: leaseA.id,
+      paid_by: tenantA.id,
+      method: 'stripe',
+      status: 'succeeded',
+      amount: 1500,
+      payment_date: '2026-03-01',
+    });
+  });
+
+  it('tenant A can see their own payment', async () => {
+    const { client } = await signInAsUser('tenant-a@test.com', 'pass123');
+    await assertRLSVisible(client, 'payments', { lease_id: leaseA.id }, 1);
+  });
+
+  it('org A owner can see payments in their org', async () => {
+    const { client } = await signInAsUser('owner-a@test.com', 'pass123');
+    await assertRLSVisible(client, 'payments', { lease_id: leaseA.id }, 1);
+  });
+
+  it('org B owner CANNOT see org A payments', async () => {
+    const { client } = await signInAsUser('owner-b@test.com', 'pass123');
+    await assertRLSNotVisible(client, 'payments', { lease_id: leaseA.id });
+  });
+});
+```
+
+**Step 4: Write similar tests for maintenance-rls.test.ts and properties-rls.test.ts**
+
+**Step 5: Run tests against local Supabase, commit**
+
+```bash
+supabase start  # if not already running
+npx vitest run --config supabase/tests/rls/vitest.config.ts
+git add -A
+git commit -m "feat: add RLS integration suite for payments, maintenance, and properties"
+```
+
+---
+
+## Task 16: Configure CI Pipeline
+
+**Files:**
+- Create: `.github/workflows/test-fast.yml`
+- Create: `.github/workflows/test-rls.yml`
+
+**Step 1: Create fast suite workflow**
+
+`.github/workflows/test-fast.yml`:
+
+```yaml
+name: Fast Suite
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test:unit
+      - run: pnpm test:components
+```
+
+**Step 2: Create RLS suite workflow**
+
+`.github/workflows/test-rls.yml`:
+
+```yaml
+name: RLS Suite
+on:
+  pull_request:
+    paths:
+      - 'supabase/migrations/**'
+  schedule:
+    - cron: '0 6 * * *'  # nightly at 6am UTC
+
+jobs:
+  test-rls:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - run: pnpm install --frozen-lockfile
+      - run: supabase start
+      - run: pnpm test:rls
+        env:
+          SUPABASE_URL: http://localhost:54321
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY_LOCAL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY_LOCAL }}
+      - run: supabase stop
+```
+
+**Step 3: Commit**
+
+```bash
+git add -A
+git commit -m "ci: add fast suite (every PR) and RLS suite (migration-triggered + nightly) workflows"
+```
+
+---
+
+## Task 17: Integration Smoke Test
+
+Verify the entire stack works end-to-end with a single smoke test.
+
+**Files:**
+- Create: `packages/mocks/src/__tests__/smoke.test.ts`
+
+**Step 1: Write smoke test**
+
+```typescript
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { createMockServer } from '../server';
+import { landlordWithTwoTenants } from '../scenarios';
+
+describe('E2E smoke test', () => {
+  const { server, store } = createMockServer();
+
+  beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+  afterAll(() => server.close());
+  beforeEach(() => {
+    store.reset();
+    server.resetHandlers();
+    store.seed(landlordWithTwoTenants());
+  });
+
+  it('full rent payment flow: sign in → list properties → create payment intent → webhook → verify', async () => {
+    const SUPABASE_URL = 'http://localhost:54321';
+
+    // 1. Sign in as tenant
+    const signIn = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'tenant1@propnest-test.com', password: 'test123' }),
+    });
+    expect(signIn.status).toBe(200);
+    const { access_token, user } = await signIn.json();
+
+    // 2. Get leases visible to this tenant
+    const leasesRes = await fetch(`${SUPABASE_URL}/rest/v1/leases?select=*`, {
+      headers: { Authorization: `Bearer ${access_token}`, apikey: 'test' },
+    });
+    const leases = await leasesRes.json();
+    expect(leases.length).toBeGreaterThanOrEqual(1);
+
+    // 3. Create payment intent via edge function
+    const lease = leases[0];
+    const piRes = await fetch(`${SUPABASE_URL}/functions/v1/create-payment-intent`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        lease_id: lease.id,
+        amount_cents: lease.rent_amount * 100,
+      }),
+    });
+    expect(piRes.status).toBe(200);
+    const { client_secret } = await piRes.json();
+    expect(client_secret).toBeDefined();
+
+    // 4. Verify payment record was created in store
+    const payments = Array.from(store.payments.values()).filter(
+      (p) => p.lease_id === lease.id,
+    );
+    expect(payments.length).toBe(1);
+    expect(payments[0].status).toBe('pending');
+  });
+});
+```
+
+**Step 2: Run it**
+
+```bash
+npx vitest run packages/mocks/src/__tests__/smoke.test.ts
+```
+
+Expected: PASS
+
+**Step 3: Commit**
+
+```bash
+git add -A
+git commit -m "test: add full E2E smoke test covering sign-in → payment flow through MSW"
+```
+
+---
+
+## Summary of Tasks
+
+| Task | Package | What It Builds | Depends On |
+|------|---------|---------------|------------|
+| 1 | root | Monorepo skeleton (Turborepo, pnpm, tsconfig) | — |
+| 2 | packages/db | Supabase client factory + type stubs | 1 |
+| 3 | packages/core | Business logic (role checks, payments, leases) | 2 |
+| 4 | packages/mocks | MockStore + fixture factories | 2 |
+| 5 | packages/mocks | Supabase Auth MSW handlers | 4 |
+| 6 | packages/mocks | PostgREST REST MSW handlers (most complex) | 4, 5 |
+| 7 | packages/mocks | Storage MSW handlers | 4 |
+| 8 | packages/mocks | Stripe MSW handlers | 4 |
+| 9 | packages/mocks | Edge Function MSW handlers | 5, 6, 8 |
+| 10 | packages/mocks | Realtime WebSocket server | 4 |
+| 11 | packages/mocks | Scenario DSL (6 scenarios) | 4 |
+| 12 | packages/mocks | Server + browser + index wiring | 5, 6, 7, 8, 9 |
+| 13 | packages/test-utils | RLS integration suite helpers | 2 |
+| 14 | packages/repositories | Interfaces + mock/Supabase implementations | 2, 4 |
+| 15 | supabase/tests/rls | RLS integration test suite | 13 |
+| 16 | .github/workflows | CI pipeline (fast + RLS) | 15 |
+| 17 | packages/mocks | E2E smoke test | 12, 11 |
+
+**Critical path:** 1 → 2 → 4 → 5 → 6 → 9 → 12 → 11 → 17
+
+**Parallelizable:** Tasks 7, 8, 10 can run in parallel after Task 4. Tasks 13, 14 can run in parallel after Task 2.
