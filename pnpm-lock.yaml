@@ -45,6 +45,18 @@ importers:
         specifier: ^8.5.0
         version: 8.18.1
 
+  packages/repositories:
+    dependencies:
+      '@faker-js/faker':
+        specifier: ^9.0.0
+        version: 9.9.0
+      '@propnest/db':
+        specifier: workspace:*
+        version: link:../db
+      '@propnest/mocks':
+        specifier: workspace:*
+        version: link:../mocks
+
   packages/test-utils:
     dependencies:
       '@faker-js/faker':

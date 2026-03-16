@@ -39,7 +39,7 @@ export interface MockUpload {
   bucket: string;
   path: string;
   mime_type: string;
-  data: Buffer | string;
+  data: Uint8Array | string;
   created_at: string;
 }
 
