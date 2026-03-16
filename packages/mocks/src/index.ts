@@ -10,3 +10,5 @@ export type {
 } from './store';
 
 export * from './fixtures';
+export { createMockRealtimeServer } from './realtime/ws-server';
+export type { MockRealtimeServer } from './realtime/ws-server';
