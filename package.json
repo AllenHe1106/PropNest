@@ -1,0 +1,20 @@
+{
+  "name": "propnest",
+  "private": true,
+  "scripts": {
+    "build": "turbo build",
+    "dev": "turbo dev",
+    "test:unit": "turbo test:unit",
+    "test:components": "turbo test:components",
+    "test:e2e": "turbo test:e2e",
+    "test:rls": "turbo test:rls",
+    "lint": "turbo lint",
+    "typecheck": "turbo typecheck"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "devDependencies": {
+    "turbo": "^2.8.17",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}
