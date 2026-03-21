@@ -9,7 +9,12 @@
     "test:e2e": "turbo test:e2e",
     "test:rls": "turbo test:rls",
     "lint": "turbo lint",
-    "typecheck": "turbo typecheck"
+    "typecheck": "turbo typecheck",
+    "db:start": "supabase start",
+    "db:stop": "supabase stop",
+    "db:reset": "supabase db reset",
+    "db:migrate": "supabase migration new",
+    "gen:types": "supabase gen types typescript --local > packages/db/src/types.generated.ts"
   },
   "packageManager": "pnpm@9.15.0",
   "devDependencies": {
