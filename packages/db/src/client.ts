@@ -1,11 +1,9 @@
-import { createClient as supabaseCreateClient, type SupabaseClient } from '@supabase/supabase-js';
+import { createClient as supabaseCreateClient } from '@supabase/supabase-js';
+import type { Database } from './types.generated';
 
-export type { SupabaseClient };
+export type { Database };
+export type SupabaseClient = ReturnType<typeof supabaseCreateClient<Database>>;
 
-/**
- * Factory function — NOT a singleton.
- * Web and mobile pass different storage adapters.
- */
 export function createClient(
   url: string,
   anonKey: string,
@@ -18,7 +16,7 @@ export function createClient(
     };
   },
 ): SupabaseClient {
-  return supabaseCreateClient(url, anonKey, {
+  return supabaseCreateClient<Database>(url, anonKey, {
     auth: {
       autoRefreshToken: true,
       persistSession: true,
