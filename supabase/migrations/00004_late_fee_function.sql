@@ -17,6 +17,7 @@ begin
     where rc.charge_type = 'rent'
       and rc.is_waived = false
       and l.status = 'active'
+      and l.late_fee_amount is not null
       and rc.due_date + l.grace_period_days < current_date
       and not exists (
         select 1 from payments p

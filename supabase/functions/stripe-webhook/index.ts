@@ -34,28 +34,30 @@ serve(async (req) => {
     switch (event.type) {
       case 'payment_intent.succeeded': {
         const intent = event.data.object as Stripe.PaymentIntent;
-        await supabase
+        const { error: succErr } = await supabase
           .from('payments')
           .update({
             status: 'succeeded',
             stripe_charge_id: intent.latest_charge as string,
           })
           .eq('stripe_payment_intent_id', intent.id);
+        if (succErr) console.error('Failed to update payment to succeeded:', succErr);
         break;
       }
 
       case 'payment_intent.payment_failed': {
         const intent = event.data.object as Stripe.PaymentIntent;
-        await supabase
+        const { error: failErr } = await supabase
           .from('payments')
           .update({ status: 'failed' })
           .eq('stripe_payment_intent_id', intent.id);
+        if (failErr) console.error('Failed to update payment to failed:', failErr);
         break;
       }
 
       case 'account.updated': {
         const account = event.data.object as Stripe.Account;
-        await supabase
+        const { error: acctErr } = await supabase
           .from('stripe_accounts')
           .update({
             charges_enabled: account.charges_enabled ?? false,
@@ -63,6 +65,7 @@ serve(async (req) => {
             details_submitted: account.details_submitted ?? false,
           })
           .eq('stripe_account_id', account.id);
+        if (acctErr) console.error('Failed to update stripe account:', acctErr);
         break;
       }
     }

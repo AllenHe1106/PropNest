@@ -119,20 +119,20 @@ begin
     (lease3_id, tenant1_id, true, now()),  -- tenant1 has two leases
     (lease4_id, tenant3_id, true, now());
 
-  -- Rent charges (current month + one overdue)
+  -- Rent charges (current month + one overdue, using relative dates)
   insert into rent_charges (lease_id, charge_type, amount, due_date) values
-    (lease1_id, 'rent', 1500, '2026-03-01'),
-    (lease1_id, 'rent', 1500, '2026-02-01'),  -- last month (overdue scenario)
-    (lease2_id, 'rent', 1800, '2026-03-01'),
-    (lease3_id, 'rent', 2200, '2026-03-01'),
-    (lease4_id, 'rent', 1200, '2026-03-01');
+    (lease1_id, 'rent', 1500, date_trunc('month', current_date)::date),
+    (lease1_id, 'rent', 1500, (date_trunc('month', current_date) - interval '1 month')::date),  -- last month (overdue scenario)
+    (lease2_id, 'rent', 1800, date_trunc('month', current_date)::date),
+    (lease3_id, 'rent', 2200, date_trunc('month', current_date)::date),
+    (lease4_id, 'rent', 1200, date_trunc('month', current_date)::date);
 
   -- Payments (some paid, some not)
   insert into payments (lease_id, paid_by, method, status, amount, payment_date) values
-    (lease2_id, tenant2_id, 'stripe', 'succeeded', 1800, '2026-03-02'),
-    (lease3_id, tenant1_id, 'check', 'succeeded', 2200, '2026-03-01'),
-    (lease4_id, tenant3_id, 'stripe', 'succeeded', 1200, '2026-03-03');
-  -- lease1 February rent is unpaid (overdue)
+    (lease2_id, tenant2_id, 'stripe', 'succeeded', 1800, (date_trunc('month', current_date) + interval '1 day')::date),
+    (lease3_id, tenant1_id, 'check', 'succeeded', 2200, date_trunc('month', current_date)::date),
+    (lease4_id, tenant3_id, 'stripe', 'succeeded', 1200, (date_trunc('month', current_date) + interval '2 days')::date);
+  -- lease1 last month's rent is unpaid (overdue)
 
   -- Maintenance requests
   insert into maintenance_requests (unit_id, submitted_by, title, description, status, priority, category) values

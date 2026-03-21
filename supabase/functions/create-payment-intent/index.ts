@@ -37,8 +37,8 @@ serve(async (req) => {
 
     const { lease_id, rent_charge_id, amount_cents } = await req.json();
 
-    if (!lease_id || !amount_cents) {
-      return new Response(JSON.stringify({ error: 'lease_id and amount_cents are required' }), {
+    if (!lease_id || !amount_cents || !Number.isInteger(amount_cents) || amount_cents <= 0) {
+      return new Response(JSON.stringify({ error: 'lease_id and a positive integer amount_cents are required' }), {
         status: 400,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });

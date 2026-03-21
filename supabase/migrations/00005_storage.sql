@@ -65,9 +65,19 @@ create policy "org members can read maintenance files"
     and is_org_member((storage.foldername(name))[1]::uuid, array['owner','manager']::org_member_role[])
   );
 
-create policy "users can upload maintenance files"
+create policy "tenants can read their maintenance files"
+  on storage.objects for select
+  using (
+    bucket_id = 'maintenance'
+    and (storage.foldername(name))[2] = auth.uid()::text
+  );
+
+create policy "users can upload maintenance files to their org"
   on storage.objects for insert
   with check (
     bucket_id = 'maintenance'
-    and auth.role() = 'authenticated'
+    and (
+      is_org_member((storage.foldername(name))[1]::uuid, array['owner','manager']::org_member_role[])
+      or (storage.foldername(name))[2] = auth.uid()::text
+    )
   );

@@ -78,10 +78,17 @@ create policy "owners can manage members"
   on organization_members for all
   using (is_org_member(organization_id, array['owner']::org_member_role[]));
 
--- Allow self-insert for org creation flow (user creates org then adds themselves)
-create policy "users can insert themselves as owner"
+-- Allow self-insert for org creation flow (only if org has no members yet)
+create policy "users can insert themselves as owner of new org"
   on organization_members for insert
-  with check (user_id = auth.uid() and role = 'owner');
+  with check (
+    user_id = auth.uid()
+    and role = 'owner'
+    and not exists (
+      select 1 from organization_members om
+      where om.organization_id = organization_members.organization_id
+    )
+  );
 
 -- ============================================================
 -- PROPERTIES
@@ -523,6 +530,5 @@ create policy "conversation participants can send messages"
 -- ============================================================
 alter table audit_logs enable row level security;
 
-create policy "org members can read audit logs"
-  on audit_logs for select
-  using (auth.role() = 'authenticated');
+-- Audit logs are read via service role only (Edge Functions / admin dashboards).
+-- No direct user-facing read policy to prevent cross-org data leakage.
