@@ -33,20 +33,20 @@ serve(async (req) => {
     const isMember = await requireOrgMember(user.id, orgId);
     if (!isMember) return errorResponse('Forbidden', 403);
 
-    // Check if user already exists
-    const { data: existingUsers } = await supabase.auth.admin.listUsers();
-    const existingUser = existingUsers?.users?.find((u) => u.email === email);
-
+    // Try to invite user — if they already exist, look them up
     let inviteeId: string;
+    const { data: invited, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(email);
 
-    if (existingUser) {
+    if (inviteError) {
+      // User likely already exists — look up by email via paginated search
+      const { data: { users } } = await supabase.auth.admin.listUsers({ perPage: 1000 });
+      const existingUser = users?.find((u) => u.email === email);
+      if (!existingUser) {
+        return errorResponse(inviteError.message || 'Failed to invite user', 500);
+      }
       inviteeId = existingUser.id;
     } else {
-      const { data: invited, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(email);
-      if (inviteError || !invited.user) {
-        return errorResponse(inviteError?.message || 'Failed to invite user', 500);
-      }
-      inviteeId = invited.user.id;
+      inviteeId = invited.user!.id;
     }
 
     // Check for existing tenant record (idempotent)
