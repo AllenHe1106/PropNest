@@ -38,14 +38,18 @@ serve(async (req) => {
     const supabase = getServiceClient();
 
     if (payload.type === 'member_invite' && payload.organization_id) {
-      const { error } = await supabase
+      const { data: updated, error } = await supabase
         .from('organization_members')
         .update({ accepted_at: new Date().toISOString() })
         .eq('organization_id', payload.organization_id)
         .eq('user_id', user.id)
-        .is('accepted_at', null);
+        .is('accepted_at', null)
+        .select('id')
+        .single();
 
-      if (error) return errorResponse(error.message, 500);
+      if (error || !updated) {
+        return errorResponse('Invite not found or already accepted', 404);
+      }
 
       return jsonResponse({
         action: 'accepted',
@@ -55,14 +59,18 @@ serve(async (req) => {
     }
 
     if (payload.type === 'tenant_invite' && payload.lease_id) {
-      const { error } = await supabase
+      const { data: updated, error } = await supabase
         .from('lease_tenants')
         .update({ accepted_at: new Date().toISOString() })
         .eq('lease_id', payload.lease_id)
         .eq('user_id', user.id)
-        .is('accepted_at', null);
+        .is('accepted_at', null)
+        .select('id')
+        .single();
 
-      if (error) return errorResponse(error.message, 500);
+      if (error || !updated) {
+        return errorResponse('Invite not found or already accepted', 404);
+      }
 
       return jsonResponse({
         action: 'accepted',
