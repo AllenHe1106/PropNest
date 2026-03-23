@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PropNest Phase 3 — Page Mockups</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f8f9fa;
+      color: #1a1a1a;
+    }
+
+    header {
+      background: #0a0a0a;
+      color: #fff;
+      padding: 2rem 2rem 1.5rem;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    header h1 { font-size: 1.5rem; font-weight: 700; }
+    header p { color: #999; margin-top: 0.25rem; font-size: 0.875rem; }
+
+    nav {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 1rem;
+      flex-wrap: wrap;
+    }
+
+    nav a {
+      color: #999;
+      text-decoration: none;
+      font-size: 0.75rem;
+      padding: 0.35rem 0.75rem;
+      border: 1px solid #333;
+      border-radius: 999px;
+      transition: all 0.15s;
+    }
+
+    nav a:hover, nav a.active {
+      color: #fff;
+      border-color: #fff;
+      background: #222;
+    }
+
+    main { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+
+    .section {
+      margin-bottom: 3rem;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: baseline;
+      gap: 0.75rem;
+      margin-bottom: 1.5rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid #e0e0e0;
+    }
+
+    .section-header h2 {
+      font-size: 1.25rem;
+      font-weight: 600;
+    }
+
+    .section-header .route {
+      font-size: 0.8rem;
+      color: #666;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      background: #eee;
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(480px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid #e0e0e0;
+      transition: box-shadow 0.2s;
+    }
+
+    .card:hover { box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+
+    .card-img {
+      width: 100%;
+      display: block;
+      border-bottom: 1px solid #e0e0e0;
+      cursor: zoom-in;
+    }
+
+    .card-img.zoomed {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100vw;
+      height: 100vh;
+      object-fit: contain;
+      background: rgba(0,0,0,0.85);
+      border: none;
+      z-index: 200;
+      cursor: zoom-out;
+      padding: 2rem;
+    }
+
+    .card-body {
+      padding: 1rem 1.25rem;
+    }
+
+    .card-body h3 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin-bottom: 0.25rem;
+    }
+
+    .card-body p {
+      font-size: 0.8rem;
+      color: #666;
+      line-height: 1.5;
+    }
+
+    .badge {
+      display: inline-block;
+      font-size: 0.65rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      margin-bottom: 0.5rem;
+    }
+
+    .badge-live { background: #dcfce7; color: #166534; }
+    .badge-planned { background: #fef3c7; color: #92400e; }
+    .badge-state { background: #dbeafe; color: #1e40af; }
+
+    .planned-card {
+      background: #fff;
+      border-radius: 12px;
+      border: 1px dashed #ccc;
+      padding: 1.5rem;
+    }
+
+    .planned-card h3 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin-bottom: 0.35rem;
+    }
+
+    .planned-card p {
+      font-size: 0.8rem;
+      color: #666;
+      line-height: 1.5;
+    }
+
+    .planned-card .feature-list {
+      margin-top: 0.75rem;
+      padding-left: 1.25rem;
+    }
+
+    .planned-card .feature-list li {
+      font-size: 0.8rem;
+      color: #555;
+      margin-bottom: 0.25rem;
+    }
+
+    footer {
+      text-align: center;
+      padding: 2rem;
+      color: #999;
+      font-size: 0.75rem;
+      border-top: 1px solid #e0e0e0;
+      margin-top: 2rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>PropNest — Phase 3 Page Mockups</h1>
+    <p>Web App Scaffold + Auth UI &mdash; Next.js 16, shadcn/ui, Supabase Auth</p>
+    <nav>
+      <a href="#login">Login</a>
+      <a href="#signup">Signup</a>
+      <a href="#forgot-password">Forgot Password</a>
+      <a href="#accept-invite">Accept Invite</a>
+      <a href="#route-protection">Route Protection</a>
+      <a href="#dashboard">Dashboard</a>
+    </nav>
+  </header>
+
+  <main>
+    <!-- LOGIN -->
+    <section class="section" id="login">
+      <div class="section-header">
+        <h2>Login</h2>
+        <span class="route">/login</span>
+      </div>
+      <div class="cards">
+        <div class="card">
+          <img class="card-img" src="01-login-default.png" alt="Login page default state" onclick="toggleZoom(this)">
+          <div class="card-body">
+            <span class="badge badge-live">Live</span>
+            <h3>Default State</h3>
+            <p>Email and password form with "Sign in" button. "Sign in with magic link" as an alternative. Links to forgot password and signup pages.</p>
+          </div>
+        </div>
+        <div class="card">
+          <img class="card-img" src="02-login-error.png" alt="Login page error state" onclick="toggleZoom(this)">
+          <div class="card-body">
+            <span class="badge badge-state">State</span>
+            <h3>Error State</h3>
+            <p>Red destructive alert displayed above form fields when login fails. Form fields retain their values. Buttons re-enabled for retry.</p>
+          </div>
+        </div>
+        <div class="card">
+          <img class="card-img" src="03-login-magic-link-validation.png" alt="Login magic link validation" onclick="toggleZoom(this)">
+          <div class="card-body">
+            <span class="badge badge-state">State</span>
+            <h3>Magic Link Validation</h3>
+            <p>"Enter your email first" error shown when clicking magic link button without providing an email address.</p>
+          </div>
+        </div>
+        <div class="planned-card">
+          <span class="badge badge-planned">Requires Supabase</span>
+          <h3>Magic Link Sent</h3>
+          <p>Card changes to "Check your email" confirmation with the recipient email bolded. "Back to login" button to return to the form.</p>
+          <ul class="feature-list">
+            <li>Title: "Check your email"</li>
+            <li>Shows: "We sent a sign-in link to <strong>email</strong>"</li>
+            <li>Button: "Back to login" (ghost variant)</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- SIGNUP -->
+    <section class="section" id="signup">
+      <div class="section-header">
+        <h2>Signup</h2>
+        <span class="route">/signup</span>
+      </div>
+      <div class="cards">
+        <div class="card">
+          <img class="card-img" src="04-signup-default.png" alt="Signup page default state" onclick="toggleZoom(this)">
+          <div class="card-body">
+            <span class="badge badge-live">Live</span>
+            <h3>Default State</h3>
+            <p>Full name, email, and password fields. "Get started with PropNest" description. Minimum 6 character password. Link back to sign in.</p>
+          </div>
+        </div>
+        <div class="card">
+          <img class="card-img" src="05-signup-with-invite.png" alt="Signup with invite token" onclick="toggleZoom(this)">
+          <div class="card-body">
+            <span class="badge badge-live">Live</span>
+            <h3>With Invite Token</h3>
+            <p>When <code>?invite_token=...</code> is present, description changes to "Complete your account to accept the invitation". Token is preserved through the flow.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FORGOT PASSWORD -->
+    <section class="section" id="forgot-password">
+      <div class="section-header">
+        <h2>Forgot Password</h2>
+        <span class="route">/forgot-password</span>
+      </div>
+      <div class="cards">
+        <div class="card">
+          <img class="card-img" src="06-forgot-password.png" alt="Forgot password page" onclick="toggleZoom(this)">
+          <div class="card-body">
+            <span class="badge badge-live">Live</span>
+            <h3>Default State</h3>
+            <p>Email input with "Send reset link" button. "Back to login" link in footer. Sends reset email via Supabase <code>resetPasswordForEmail</code>.</p>
+          </div>
+        </div>
+        <div class="planned-card">
+          <span class="badge badge-planned">Requires Supabase</span>
+          <h3>Email Sent Confirmation</h3>
+          <p>Card changes to confirmation view after successful submission.</p>
+          <ul class="feature-list">
+            <li>Title: "Check your email"</li>
+            <li>Shows: "We sent a password reset link to <strong>email</strong>"</li>
+            <li>Button: "Back to login" (links to /login)</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ACCEPT INVITE -->
+    <section class="section" id="accept-invite">
+      <div class="section-header">
+        <h2>Accept Invite</h2>
+        <span class="route">/accept-invite</span>
+      </div>
+      <div class="cards">
+        <div class="card">
+          <img class="card-img" src="07-accept-invite-no-token.png" alt="Accept invite no token" onclick="toggleZoom(this)">
+          <div class="card-body">
+            <span class="badge badge-live">Live</span>
+            <h3>No Token Provided</h3>
+            <p>"Invalid invite" card shown when no <code>?token=</code> query parameter is present in the URL.</p>
+          </div>
+        </div>
+        <div class="card">
+          <img class="card-img" src="08-accept-invite-error.png" alt="Accept invite error" onclick="toggleZoom(this)">
+          <div class="card-body">
+            <span class="badge badge-live">Live</span>
+            <h3>Error State</h3>
+            <p>"Something went wrong" with red alert and "Go to login" button. Shown when the Edge Function is unreachable or returns an error.</p>
+          </div>
+        </div>
+        <div class="planned-card">
+          <span class="badge badge-planned">Requires Supabase</span>
+          <h3>Loading State</h3>
+          <p>Shown briefly while the accept-invite Edge Function is being called.</p>
+          <ul class="feature-list">
+            <li>Title: "Accepting invite..."</li>
+            <li>Description: "Please wait while we process your invitation."</li>
+          </ul>
+        </div>
+        <div class="planned-card">
+          <span class="badge badge-planned">Requires Supabase</span>
+          <h3>Invite Accepted</h3>
+          <p>Success confirmation before automatic redirect to dashboard.</p>
+          <ul class="feature-list">
+            <li>Title: "Invite accepted!"</li>
+            <li>Description: "Redirecting you to the dashboard..."</li>
+            <li>Auto-redirects to <code>/</code> after 2 seconds</li>
+          </ul>
+        </div>
+        <div class="planned-card">
+          <span class="badge badge-planned">Requires Supabase</span>
+          <h3>Signup Required</h3>
+          <p>Shown when the user doesn't have an account yet.</p>
+          <ul class="feature-list">
+            <li>Title: "Create an account first"</li>
+            <li>Description: "You need to sign up before accepting this invite."</li>
+            <li>Button: "Create account" (links to <code>/signup?invite_token=...</code>)</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ROUTE PROTECTION -->
+    <section class="section" id="route-protection">
+      <div class="section-header">
+        <h2>Route Protection</h2>
+        <span class="route">proxy.ts</span>
+      </div>
+      <div class="cards">
+        <div class="card">
+          <img class="card-img" src="09-route-protection-redirect.png" alt="Route protection redirect" onclick="toggleZoom(this)">
+          <div class="card-body">
+            <span class="badge badge-live">Live</span>
+            <h3>Unauthenticated Redirect</h3>
+            <p>Navigating to <code>/</code> (dashboard) without authentication redirects to <code>/login</code>. All non-public routes are protected by the proxy.</p>
+          </div>
+        </div>
+        <div class="planned-card">
+          <span class="badge badge-planned">Requires Auth Session</span>
+          <h3>Authenticated Redirect</h3>
+          <p>Authenticated users visiting auth pages (<code>/login</code>, <code>/signup</code>, <code>/forgot-password</code>) are redirected to <code>/</code>. Exception: <code>/accept-invite</code> and <code>/auth/callback</code> remain accessible.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- DASHBOARD -->
+    <section class="section" id="dashboard">
+      <div class="section-header">
+        <h2>Dashboard</h2>
+        <span class="route">/</span>
+      </div>
+      <div class="cards">
+        <div class="planned-card">
+          <span class="badge badge-planned">Requires Auth Session</span>
+          <h3>Dashboard Home &mdash; Owner View</h3>
+          <p>Full dashboard with sidebar, header, and content area for an organization owner.</p>
+          <ul class="feature-list">
+            <li>Sidebar: "PropNest" logo, "Dashboard" nav item with active highlight</li>
+            <li>Header: User name, role badge ("owner"), sign-out button</li>
+            <li>Content: "Welcome, [name]" greeting</li>
+            <li>Organization card with name and role badge</li>
+            <li>Stripe Connect alert if not yet connected</li>
+          </ul>
+        </div>
+        <div class="planned-card">
+          <span class="badge badge-planned">Requires Auth Session</span>
+          <h3>Dashboard Home &mdash; Tenant View</h3>
+          <p>Dashboard for a tenant user showing their active leases.</p>
+          <ul class="feature-list">
+            <li>Header: User name (no role badge for tenants without org membership)</li>
+            <li>"Your Leases" card listing properties, unit numbers, rent amounts</li>
+            <li>Each lease shows status badge ("active" / "pending")</li>
+            <li>Primary tenant indicator</li>
+          </ul>
+        </div>
+        <div class="planned-card">
+          <span class="badge badge-planned">Requires Auth Session</span>
+          <h3>Dashboard Home &mdash; Empty State</h3>
+          <p>Shown when a user has no org memberships and no leases.</p>
+          <ul class="feature-list">
+            <li>Title: "Getting started"</li>
+            <li>Description: "You don't have any organization memberships or active leases yet. Ask your landlord or property manager to send you an invite."</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    PropNest Phase 3 Mockups &mdash; Generated 2026-03-22 via Playwright automated screenshots
+  </footer>
+
+  <script>
+    function toggleZoom(img) {
+      img.classList.toggle('zoomed');
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        document.querySelectorAll('.zoomed').forEach(el => el.classList.remove('zoomed'));
+      }
+    });
+  </script>
+</body>
+</html>
