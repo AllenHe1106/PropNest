@@ -24,43 +24,48 @@ function AcceptInviteContent() {
     }
 
     async function acceptInvite() {
-      const { data: { session } } = await supabase.auth.getSession();
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
 
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/accept-invite`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(session?.access_token
-              ? { Authorization: `Bearer ${session.access_token}` }
-              : {}),
+        const res = await fetch(
+          `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/accept-invite`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(session?.access_token
+                ? { Authorization: `Bearer ${session.access_token}` }
+                : {}),
+            },
+            body: JSON.stringify({ token }),
           },
-          body: JSON.stringify({ token }),
-        },
-      );
+        );
 
-      const body = await res.json();
+        const body = await res.json();
 
-      if (!res.ok) {
-        setError(body.error || 'Failed to accept invite');
+        if (!res.ok) {
+          setError(body.error || 'Failed to accept invite');
+          setStatus('error');
+          return;
+        }
+
+        if (body.action === 'signup_required') {
+          setStatus('signup_required');
+          return;
+        }
+
+        if (body.action === 'accepted') {
+          setStatus('accepted');
+          // Refresh session to pick up new permissions
+          await supabase.auth.refreshSession();
+          setTimeout(() => {
+            router.push('/');
+            router.refresh();
+          }, 2000);
+        }
+      } catch {
+        setError('Unable to process invite. Please try again later.');
         setStatus('error');
-        return;
-      }
-
-      if (body.action === 'signup_required') {
-        setStatus('signup_required');
-        return;
-      }
-
-      if (body.action === 'accepted') {
-        setStatus('accepted');
-        // Refresh session to pick up new permissions
-        await supabase.auth.refreshSession();
-        setTimeout(() => {
-          router.push('/');
-          router.refresh();
-        }, 2000);
       }
     }
 
