@@ -1,10 +1,11 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import Stripe from 'https://esm.sh/stripe@14?target=deno';
-import { corsResponse, jsonResponse, errorResponse } from '../_shared/cors.ts';
+import { corsResponse, jsonResponse, errorResponse, methodNotAllowed } from '../_shared/cors.ts';
 import { getAuthenticatedUser, requireOrgOwner, getServiceClient } from '../_shared/auth.ts';
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') return corsResponse(req);
+  if (req.method !== 'POST') return methodNotAllowed();
 
   try {
     const user = await getAuthenticatedUser(req);

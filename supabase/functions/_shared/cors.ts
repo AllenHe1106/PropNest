@@ -41,3 +41,10 @@ export function jsonResponse(req: Request, data: unknown, status = 200) {
 export function errorResponse(req: Request, error: string, status: number) {
   return jsonResponse(req, { error }, status);
 }
+
+export function methodNotAllowed(): Response {
+  return new Response('Method Not Allowed', {
+    status: 405,
+    headers: { 'Allow': 'POST, OPTIONS' },
+  });
+}

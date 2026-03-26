@@ -1,10 +1,11 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
-import { corsResponse, jsonResponse, errorResponse } from '../_shared/cors.ts';
+import { corsResponse, jsonResponse, errorResponse, methodNotAllowed } from '../_shared/cors.ts';
 import { getAuthenticatedUser, getServiceClient } from '../_shared/auth.ts';
 import { verifyInviteToken } from '../_shared/invite-token.ts';
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') return corsResponse(req);
+  if (req.method !== 'POST') return methodNotAllowed();
 
   try {
     const { token } = await req.json();

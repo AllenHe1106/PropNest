@@ -2,6 +2,10 @@ import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 serve(async (req) => {
+  if (req.method !== 'POST') {
+    return new Response('Method Not Allowed', { status: 405, headers: { 'Allow': 'POST' } });
+  }
+
   // Optional: verify a shared secret for cron security
   const authHeader = req.headers.get('Authorization');
   const expectedKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
