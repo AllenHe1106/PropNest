@@ -4,21 +4,21 @@ import { getAuthenticatedUser, requireOrgOwner, getServiceClient } from '../_sha
 import { signInviteToken } from '../_shared/invite-token.ts';
 
 serve(async (req) => {
-  if (req.method === 'OPTIONS') return corsResponse();
+  if (req.method === 'OPTIONS') return corsResponse(req);
 
   try {
     const user = await getAuthenticatedUser(req);
-    if (!user) return errorResponse('Unauthorized', 401);
+    if (!user) return errorResponse(req, 'Unauthorized', 401);
 
     const { organization_id, email, role } = await req.json();
 
     if (!organization_id || !email || role !== 'manager') {
-      return errorResponse('organization_id, email, and role (must be "manager") are required', 400);
+      return errorResponse(req, 'organization_id, email, and role (must be "manager") are required', 400);
     }
 
     // Verify caller is owner
     const isOwner = await requireOrgOwner(user.id, organization_id);
-    if (!isOwner) return errorResponse('Forbidden', 403);
+    if (!isOwner) return errorResponse(req, 'Forbidden', 403);
 
     const supabase = getServiceClient();
 
@@ -31,7 +31,7 @@ serve(async (req) => {
       const { data: { users } } = await supabase.auth.admin.listUsers({ perPage: 1000 });
       const existingUser = users?.find((u) => u.email === email);
       if (!existingUser) {
-        return errorResponse(inviteError.message || 'Failed to invite user', 500);
+        return errorResponse(req, inviteError.message || 'Failed to invite user', 500);
       }
       inviteeId = existingUser.id;
     } else {
@@ -47,7 +47,7 @@ serve(async (req) => {
       .single();
 
     if (existing) {
-      return jsonResponse({ message: 'User already invited', member_id: existing.id });
+      return jsonResponse(req, { message: 'User already invited', member_id: existing.id });
     }
 
     // Insert pending membership
@@ -62,7 +62,7 @@ serve(async (req) => {
       .single();
 
     if (insertError) {
-      return errorResponse(insertError.message, 500);
+      return errorResponse(req, insertError.message, 500);
     }
 
     // Sign invite token for accept flow
@@ -73,11 +73,11 @@ serve(async (req) => {
       role: 'manager',
     });
 
-    return jsonResponse({
+    return jsonResponse(req, {
       member_id: member!.id,
       invite_token: token,
     });
   } catch (err) {
-    return errorResponse((err as Error).message, 500);
+    return errorResponse(req, (err as Error).message, 500);
   }
 });

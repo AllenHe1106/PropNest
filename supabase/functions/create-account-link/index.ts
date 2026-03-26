@@ -4,19 +4,19 @@ import { corsResponse, jsonResponse, errorResponse } from '../_shared/cors.ts';
 import { getAuthenticatedUser, requireOrgOwner, getServiceClient } from '../_shared/auth.ts';
 
 serve(async (req) => {
-  if (req.method === 'OPTIONS') return corsResponse();
+  if (req.method === 'OPTIONS') return corsResponse(req);
 
   try {
     const user = await getAuthenticatedUser(req);
-    if (!user) return errorResponse('Unauthorized', 401);
+    if (!user) return errorResponse(req, 'Unauthorized', 401);
 
     const { organization_id, return_url, refresh_url } = await req.json();
     if (!organization_id || !return_url || !refresh_url) {
-      return errorResponse('organization_id, return_url, and refresh_url are required', 400);
+      return errorResponse(req, 'organization_id, return_url, and refresh_url are required', 400);
     }
 
     const isOwner = await requireOrgOwner(user.id, organization_id);
-    if (!isOwner) return errorResponse('Forbidden', 403);
+    if (!isOwner) return errorResponse(req, 'Forbidden', 403);
 
     const supabase = getServiceClient();
 
@@ -27,7 +27,7 @@ serve(async (req) => {
       .single();
 
     if (!stripeAccount) {
-      return errorResponse('No Stripe account found. Create one first.', 404);
+      return errorResponse(req, 'No Stripe account found. Create one first.', 404);
     }
 
     const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY')!, {
@@ -41,8 +41,8 @@ serve(async (req) => {
       type: 'account_onboarding',
     });
 
-    return jsonResponse({ url: link.url });
+    return jsonResponse(req, { url: link.url });
   } catch (err) {
-    return errorResponse((err as Error).message, 500);
+    return errorResponse(req, (err as Error).message, 500);
   }
 });
