@@ -1,13 +1,14 @@
 'use client';
 
 import { createBrowserClient } from '@supabase/ssr';
+import type { Database } from '@propnest/db';
 
-let client: ReturnType<typeof createBrowserClient> | null = null;
+let client: ReturnType<typeof createBrowserClient<Database>> | null = null;
 
 export function getSupabaseBrowserClient() {
   if (client) return client;
 
-  client = createBrowserClient(
+  client = createBrowserClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
   );

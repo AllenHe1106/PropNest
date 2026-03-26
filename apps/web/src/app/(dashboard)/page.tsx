@@ -3,6 +3,24 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 
+interface MembershipRow {
+  role: string;
+  organizations: { name: string; slug: string } | null;
+}
+
+interface LeaseTenantRow {
+  lease_id: string;
+  is_primary: boolean;
+  leases: {
+    rent_amount: number;
+    status: string;
+    units: {
+      unit_number: string;
+      properties: { name: string } | null;
+    } | null;
+  } | null;
+}
+
 export default async function DashboardPage() {
   const supabase = await createServerClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -18,14 +36,14 @@ export default async function DashboardPage() {
     .eq('user_id', user.id)
     .not('accepted_at', 'is', null)
     .limit(1)
-    .single();
+    .single() as { data: MembershipRow | null };
 
   // Fetch tenant leases
   const { data: leases } = await supabase
     .from('lease_tenants')
     .select('lease_id, is_primary, leases(rent_amount, status, units(unit_number, properties(name)))')
     .eq('user_id', user.id)
-    .not('accepted_at', 'is', null);
+    .not('accepted_at', 'is', null) as { data: LeaseTenantRow[] | null };
 
   // Check Stripe Connect status for owners
   let stripeConnected = false;
@@ -33,7 +51,7 @@ export default async function DashboardPage() {
     const { data: org } = await supabase
       .from('organizations')
       .select('id')
-      .eq('slug', (membership.organizations as any)?.slug)
+      .eq('slug', membership.organizations?.slug ?? '')
       .single();
 
     if (org) {
@@ -57,7 +75,7 @@ export default async function DashboardPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              {(membership.organizations as any)?.name}
+              {membership.organizations?.name}
               <Badge variant="secondary" className="capitalize">{membership.role}</Badge>
             </CardTitle>
             <CardDescription>Your organization</CardDescription>
@@ -79,7 +97,7 @@ export default async function DashboardPage() {
             <CardTitle>Your Leases</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {leases.map((lt: any) => (
+            {leases.map((lt) => (
               <div key={lt.lease_id} className="flex items-center justify-between rounded-md border p-3">
                 <div>
                   <p className="font-medium">
