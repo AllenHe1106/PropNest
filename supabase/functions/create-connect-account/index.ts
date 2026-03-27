@@ -1,20 +1,21 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import Stripe from 'https://esm.sh/stripe@14?target=deno';
-import { corsResponse, jsonResponse, errorResponse } from '../_shared/cors.ts';
+import { corsResponse, jsonResponse, errorResponse, methodNotAllowed } from '../_shared/cors.ts';
 import { getAuthenticatedUser, requireOrgOwner, getServiceClient } from '../_shared/auth.ts';
 
 serve(async (req) => {
-  if (req.method === 'OPTIONS') return corsResponse();
+  if (req.method === 'OPTIONS') return corsResponse(req);
+  if (req.method !== 'POST') return methodNotAllowed();
 
   try {
     const user = await getAuthenticatedUser(req);
-    if (!user) return errorResponse('Unauthorized', 401);
+    if (!user) return errorResponse(req, 'Unauthorized', 401);
 
     const { organization_id } = await req.json();
-    if (!organization_id) return errorResponse('organization_id is required', 400);
+    if (!organization_id) return errorResponse(req, 'organization_id is required', 400);
 
     const isOwner = await requireOrgOwner(user.id, organization_id);
-    if (!isOwner) return errorResponse('Forbidden', 403);
+    if (!isOwner) return errorResponse(req, 'Forbidden', 403);
 
     const supabase = getServiceClient();
 
@@ -26,7 +27,7 @@ serve(async (req) => {
       .single();
 
     if (existing) {
-      return jsonResponse({ stripe_account_id: existing.stripe_account_id, existing: true });
+      return jsonResponse(req, { stripe_account_id: existing.stripe_account_id, existing: true });
     }
 
     // Create Stripe Connect Express account
@@ -50,10 +51,10 @@ serve(async (req) => {
         details_submitted: false,
       });
 
-    if (insertError) return errorResponse(insertError.message, 500);
+    if (insertError) return errorResponse(req, insertError.message, 500);
 
-    return jsonResponse({ stripe_account_id: account.id, existing: false });
+    return jsonResponse(req, { stripe_account_id: account.id, existing: false });
   } catch (err) {
-    return errorResponse((err as Error).message, 500);
+    return errorResponse(req, (err as Error).message, 500);
   }
 });

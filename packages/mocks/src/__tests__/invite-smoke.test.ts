@@ -176,4 +176,163 @@ describe('Invite flow smoke test', () => {
     const again = (await createAgain.json()) as { existing: boolean };
     expect(again.existing).toBe(true);
   });
+
+  // --- Negative-path and edge-case tests ---
+
+  it('accept-invite with missing token returns 400', async () => {
+    const ownerToken = await signIn('landlord@propnest-test.com');
+
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/accept-invite`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('accept-invite with invalid/expired token is rejected', async () => {
+    const ownerToken = await signIn('landlord@propnest-test.com');
+
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/accept-invite`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ token: 'invalid-garbage-token' }),
+    });
+    // Mock returns 404 (no matching invite); real Edge Function returns 401 (invalid token)
+    expect(res.ok).toBe(false);
+  });
+
+  it('accept-invite without auth returns signup_required', async () => {
+    // First create a valid invite token
+    const ownerToken = await signIn('landlord@propnest-test.com');
+    const orgId = Array.from(store.organizations.values())[0].id;
+
+    const inviteRes = await fetch(`${SUPABASE_URL}/functions/v1/invite-member`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ organization_id: orgId, email: 'noauth@test.com', role: 'manager' }),
+    });
+    expect(inviteRes.status).toBe(200);
+    const { invite_token } = (await inviteRes.json()) as { invite_token: string };
+
+    // Accept without Authorization header
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/accept-invite`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ token: invite_token }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { action: string };
+    expect(body.action).toBe('signup_required');
+  });
+
+  it('accept-invite with wrong user is rejected', async () => {
+    const ownerToken = await signIn('landlord@propnest-test.com');
+    const orgId = Array.from(store.organizations.values())[0].id;
+
+    // Owner invites manager@test.com
+    const inviteRes = await fetch(`${SUPABASE_URL}/functions/v1/invite-member`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ organization_id: orgId, email: 'manager@test.com', role: 'manager' }),
+    });
+    expect(inviteRes.status).toBe(200);
+    const { invite_token } = (await inviteRes.json()) as { invite_token: string };
+
+    // A different user (tenant1) tries to accept
+    const tenantToken = await signIn('tenant1@propnest-test.com');
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/accept-invite`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${tenantToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ token: invite_token }),
+    });
+    // Mock returns 404 (no matching record for wrong user); real Edge Function returns 403 (email mismatch)
+    expect(res.ok).toBe(false);
+  });
+
+  it('double-accept returns 404', async () => {
+    const ownerToken = await signIn('landlord@propnest-test.com');
+    const orgId = Array.from(store.organizations.values())[0].id;
+
+    // Owner invites manager
+    const inviteRes = await fetch(`${SUPABASE_URL}/functions/v1/invite-member`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ organization_id: orgId, email: 'doubleaccept@test.com', role: 'manager' }),
+    });
+    expect(inviteRes.status).toBe(200);
+    const { invite_token } = (await inviteRes.json()) as { invite_token: string };
+
+    // Manager accepts first time
+    const managerToken = await signIn('doubleaccept@test.com');
+    const firstAccept = await fetch(`${SUPABASE_URL}/functions/v1/accept-invite`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${managerToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ token: invite_token }),
+    });
+    expect(firstAccept.status).toBe(200);
+
+    // Manager tries to accept again with same token
+    const secondAccept = await fetch(`${SUPABASE_URL}/functions/v1/accept-invite`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${managerToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ token: invite_token }),
+    });
+    expect(secondAccept.status).toBe(404);
+  });
+
+  it('invite-member with missing fields returns 400', async () => {
+    const ownerToken = await signIn('landlord@propnest-test.com');
+    const orgId = Array.from(store.organizations.values())[0].id;
+
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/invite-member`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ organization_id: orgId }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('invite-tenant with missing fields returns 400', async () => {
+    const ownerToken = await signIn('landlord@propnest-test.com');
+
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/invite-tenant`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+  });
 });

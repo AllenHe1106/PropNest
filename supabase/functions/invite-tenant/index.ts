@@ -1,19 +1,20 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
-import { corsResponse, jsonResponse, errorResponse } from '../_shared/cors.ts';
+import { corsResponse, jsonResponse, errorResponse, methodNotAllowed } from '../_shared/cors.ts';
 import { getAuthenticatedUser, requireOrgMember, getServiceClient } from '../_shared/auth.ts';
 import { signInviteToken } from '../_shared/invite-token.ts';
 
 serve(async (req) => {
-  if (req.method === 'OPTIONS') return corsResponse();
+  if (req.method === 'OPTIONS') return corsResponse(req);
+  if (req.method !== 'POST') return methodNotAllowed();
 
   try {
     const user = await getAuthenticatedUser(req);
-    if (!user) return errorResponse('Unauthorized', 401);
+    if (!user) return errorResponse(req, 'Unauthorized', 401);
 
     const { lease_id, email, is_primary } = await req.json();
 
     if (!lease_id || !email) {
-      return errorResponse('lease_id and email are required', 400);
+      return errorResponse(req, 'lease_id and email are required', 400);
     }
 
     const supabase = getServiceClient();
@@ -25,13 +26,13 @@ serve(async (req) => {
       .eq('id', lease_id)
       .single();
 
-    if (!lease) return errorResponse('Lease not found', 404);
+    if (!lease) return errorResponse(req, 'Lease not found', 404);
 
     const orgId = (lease as any).units.properties.organization_id;
 
     // Verify caller is owner or manager of the org
     const isMember = await requireOrgMember(user.id, orgId);
-    if (!isMember) return errorResponse('Forbidden', 403);
+    if (!isMember) return errorResponse(req, 'Forbidden', 403);
 
     // Try to invite user — if they already exist, look them up
     let inviteeId: string;
@@ -42,7 +43,7 @@ serve(async (req) => {
       const { data: { users } } = await supabase.auth.admin.listUsers({ perPage: 1000 });
       const existingUser = users?.find((u) => u.email === email);
       if (!existingUser) {
-        return errorResponse(inviteError.message || 'Failed to invite user', 500);
+        return errorResponse(req, inviteError.message || 'Failed to invite user', 500);
       }
       inviteeId = existingUser.id;
     } else {
@@ -58,7 +59,7 @@ serve(async (req) => {
       .single();
 
     if (existing) {
-      return jsonResponse({ message: 'Tenant already invited', lease_tenant_id: existing.id });
+      return jsonResponse(req, { message: 'Tenant already invited', lease_tenant_id: existing.id });
     }
 
     // Insert pending tenant
@@ -73,7 +74,7 @@ serve(async (req) => {
       .single();
 
     if (insertError) {
-      return errorResponse(insertError.message, 500);
+      return errorResponse(req, insertError.message, 500);
     }
 
     // Sign invite token
@@ -83,11 +84,11 @@ serve(async (req) => {
       lease_id,
     });
 
-    return jsonResponse({
+    return jsonResponse(req, {
       lease_tenant_id: tenant!.id,
       invite_token: token,
     });
   } catch (err) {
-    return errorResponse((err as Error).message, 500);
+    return errorResponse(req, (err as Error).message, 500);
   }
 });

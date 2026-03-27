@@ -11,5 +11,8 @@
     "@supabase/supabase-js": "^2.49.0",
     "@faker-js/faker": "^9.0.0",
     "@propnest/db": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0"
   }
 }

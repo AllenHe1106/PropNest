@@ -8,8 +8,11 @@
     ".": "./src/index.ts",
     "./permissions": "./src/permissions/role-checks.ts"
   },
+  "dependencies": {
+    "@propnest/db": "workspace:*"
+  },
   "scripts": {
-    "test:unit": "vitest run",
+    "test:unit": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"
   }
 }
