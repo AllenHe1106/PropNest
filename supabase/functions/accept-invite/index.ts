@@ -2,17 +2,16 @@ import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { corsResponse, jsonResponse, errorResponse, methodNotAllowed } from '../_shared/cors.ts';
 import { getAuthenticatedUser, getServiceClient } from '../_shared/auth.ts';
 import { verifyInviteToken } from '../_shared/invite-token.ts';
+import { validate, AcceptInviteSchema } from '../_shared/validators.ts';
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') return corsResponse(req);
   if (req.method !== 'POST') return methodNotAllowed();
 
   try {
-    const { token } = await req.json();
-
-    if (!token) {
-      return errorResponse(req, 'token is required', 400);
-    }
+    const parsed = validate(AcceptInviteSchema, await req.json());
+    if (!parsed.success) return errorResponse(req, parsed.error, 400);
+    const { token } = parsed.data;
 
     // Verify invite token
     const payload = await verifyInviteToken(token);

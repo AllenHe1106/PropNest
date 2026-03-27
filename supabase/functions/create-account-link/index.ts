@@ -2,6 +2,7 @@ import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import Stripe from 'https://esm.sh/stripe@14?target=deno';
 import { corsResponse, jsonResponse, errorResponse, methodNotAllowed } from '../_shared/cors.ts';
 import { getAuthenticatedUser, requireOrgOwner, getServiceClient } from '../_shared/auth.ts';
+import { validate, CreateAccountLinkSchema } from '../_shared/validators.ts';
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') return corsResponse(req);
@@ -11,10 +12,9 @@ serve(async (req) => {
     const user = await getAuthenticatedUser(req);
     if (!user) return errorResponse(req, 'Unauthorized', 401);
 
-    const { organization_id, return_url, refresh_url } = await req.json();
-    if (!organization_id || !return_url || !refresh_url) {
-      return errorResponse(req, 'organization_id, return_url, and refresh_url are required', 400);
-    }
+    const parsed = validate(CreateAccountLinkSchema, await req.json());
+    if (!parsed.success) return errorResponse(req, parsed.error, 400);
+    const { organization_id, return_url, refresh_url } = parsed.data;
 
     const isOwner = await requireOrgOwner(user.id, organization_id);
     if (!isOwner) return errorResponse(req, 'Forbidden', 403);
