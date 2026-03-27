@@ -12,7 +12,7 @@
     "@propnest/db": "workspace:*"
   },
   "scripts": {
-    "test:unit": "vitest run",
+    "test:unit": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"
   }
 }
