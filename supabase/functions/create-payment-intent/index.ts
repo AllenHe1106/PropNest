@@ -1,52 +1,31 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import Stripe from 'https://esm.sh/stripe@14?target=deno';
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
+import { corsResponse, jsonResponse, errorResponse, methodNotAllowed } from '../_shared/cors.ts';
+import { getAuthenticatedUser, getServiceClient } from '../_shared/auth.ts';
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+    return corsResponse(req);
   }
 
   if (req.method !== 'POST') {
-    return new Response('Method Not Allowed', { status: 405, headers: { 'Allow': 'POST, OPTIONS' } });
+    return methodNotAllowed();
   }
 
   try {
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-    );
-
     // 1. Authenticate user
-    const jwt = req.headers.get('Authorization')?.replace('Bearer ', '');
-    if (!jwt) {
-      return new Response(JSON.stringify({ error: 'Missing authorization' }), {
-        status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-
-    const { data: { user }, error: authError } = await supabase.auth.getUser(jwt);
-    if (authError || !user) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+    const user = await getAuthenticatedUser(req);
+    if (!user) {
+      return errorResponse(req, 'Unauthorized', 401);
     }
 
     const { lease_id, rent_charge_id, amount_cents } = await req.json();
 
     if (!lease_id || !amount_cents || !Number.isInteger(amount_cents) || amount_cents <= 0) {
-      return new Response(JSON.stringify({ error: 'lease_id and a positive integer amount_cents are required' }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return errorResponse(req, 'lease_id and a positive integer amount_cents are required', 400);
     }
+
+    const supabase = getServiceClient();
 
     // 2. Verify user is an active tenant on this lease
     const { data: tenantCheck } = await supabase
@@ -58,10 +37,7 @@ serve(async (req) => {
       .single();
 
     if (!tenantCheck) {
-      return new Response(JSON.stringify({ error: 'Forbidden' }), {
-        status: 403,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return errorResponse(req, 'Forbidden', 403);
     }
 
     // 3. Fetch landlord's Stripe Connect account
@@ -86,10 +62,7 @@ serve(async (req) => {
       ?.units?.properties?.organizations?.stripe_accounts?.[0]?.stripe_account_id;
 
     if (!stripeAccountId) {
-      return new Response(JSON.stringify({ error: 'Landlord not set up for payments' }), {
-        status: 422,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return errorResponse(req, 'Landlord not set up for payments', 422);
     }
 
     // 4. Create Stripe PaymentIntent
@@ -120,14 +93,8 @@ serve(async (req) => {
       stripe_payment_intent_id: intent.id,
     });
 
-    return new Response(
-      JSON.stringify({ client_secret: intent.client_secret }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-    );
+    return jsonResponse(req, { client_secret: intent.client_secret });
   } catch (err) {
-    return new Response(JSON.stringify({ error: (err as Error).message }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+    return errorResponse(req, (err as Error).message, 500);
   }
 });
