@@ -88,7 +88,11 @@ importers:
         specifier: ^5
         version: 5.9.3
 
-  packages/core: {}
+  packages/core:
+    dependencies:
+      '@propnest/db':
+        specifier: workspace:*
+        version: link:../db
 
   packages/db:
     dependencies:
@@ -138,6 +142,10 @@ importers:
       '@supabase/supabase-js':
         specifier: ^2.49.0
         version: 2.99.1
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.15
 
   packages/validators:
     dependencies:
@@ -1133,6 +1141,9 @@ packages:
 
   '@types/node@20.19.37':
     resolution: {integrity: sha512-8kzdPJ3FsNsVIurqBs7oodNnCEVbni9yUEkaHbgptDACOPW04jimGagZ51E6+lXUwJjgnBw+hyko/lkFWCldqw==}
+
+  '@types/node@22.19.15':
+    resolution: {integrity: sha512-F0R/h2+dsy5wJAUe3tAU6oqa2qbWY5TpNfL/RGmo1y38hiyO1w3x2jPtt76wmuaJI4DQnOBu21cNXQ2STIUUWg==}
 
   '@types/node@25.5.0':
     resolution: {integrity: sha512-jp2P3tQMSxWugkCUKLRPVUpGaL5MVFwF8RDuSRztfwgN1wmqJeMSbKlnEtQqU8UrhTmzEmZdu2I6v2dpp7XIxw==}
@@ -4500,6 +4511,10 @@ snapshots:
   '@types/json5@0.0.29': {}
 
   '@types/node@20.19.37':
+    dependencies:
+      undici-types: 6.21.0
+
+  '@types/node@22.19.15':
     dependencies:
       undici-types: 6.21.0
 
