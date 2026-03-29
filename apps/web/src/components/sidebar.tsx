@@ -3,10 +3,11 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
-import { LayoutDashboard } from 'lucide-react';
+import { LayoutDashboard, Building2 } from 'lucide-react';
 
 const navItems = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/properties', label: 'Properties', icon: Building2 },
 ];
 
 export function Sidebar() {
@@ -22,7 +23,9 @@ export function Sidebar() {
       <nav className="space-y-1 p-2">
         {navItems.map((item) => {
           const Icon = item.icon;
-          const isActive = pathname === item.href;
+          const isActive = item.href === '/'
+            ? pathname === '/'
+            : pathname === item.href || pathname.startsWith(item.href + '/');
           return (
             <Link
               key={item.href}
